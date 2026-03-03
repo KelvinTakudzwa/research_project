@@ -23,16 +23,23 @@ Before running the system, you must create the database and tables.
     ```
 
 ## 3. Running the System
-You need to run the Backend and Frontend in separate terminals.
+You need to run the **Python ML API**, the **Backend**, and the **Frontend** in separate terminals.
 
-### Terminal 1: Backend
+### Terminal 1: Python ML API
+```bash
+cd backend
+python ml_api.py
+```
+*Expected Output*: `Uvicorn running on http://127.0.0.1:8000`
+
+### Terminal 2: Backend (Node.js)
 ```bash
 cd backend
 node server.js
 ```
 *Expected Output*: `Server running on port 5000`
 
-### Terminal 2: Frontend
+### Terminal 3: Frontend (React)
 ```bash
 cd frontend
 npm run dev

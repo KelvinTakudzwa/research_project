@@ -1,7 +1,7 @@
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
-const { spawn } = require('child_process');
+
 const path = require('path');
 
 const app = express();
@@ -23,34 +23,26 @@ const db = mysql.createPool({
     queueLimit: 0
 });
 
-// Helper: Run Python ML Script
-const checkAnomaly = (dataPacket) => {
-    return new Promise((resolve, reject) => {
-        // Path to python script
-        const scriptPath = path.join(__dirname, 'ml_runner.py');
-        const pythonProcess = spawn('python', [scriptPath, JSON.stringify(dataPacket)]);
-
-        let result = '';
-        pythonProcess.stdout.on('data', (data) => {
-            result += data.toString();
+// Helper: Fetch Prediction from Python FastAPI Service
+const checkAnomaly = async (dataPacket) => {
+    try {
+        const response = await fetch('http://127.0.0.1:8000/predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dataPacket)
         });
 
-        pythonProcess.stderr.on('data', (data) => {
-            console.error(`ML Error: ${data}`);
-        });
+        if (!response.ok) {
+            console.error(`ML API Error: ${response.status} ${response.statusText}`);
+            return { status: "Error", error: "ML API Error" };
+        }
 
-        pythonProcess.on('close', (code) => {
-            if (code !== 0) {
-                resolve({ status: "Error", error: "ML Script Failed" });
-            } else {
-                try {
-                    resolve(JSON.parse(result));
-                } catch (e) {
-                    resolve({ status: "Error", error: "Invalid JSON" });
-                }
-            }
-        });
-    });
+        const data = await response.json();
+        return data;
+    } catch (error) {
+        console.error("Failed to connect to ML FastAPI service:", error.message);
+        return { status: "Error", error: "ML Service Offline" };
+    }
 };
 
 // --- ENDPOINTS ---
