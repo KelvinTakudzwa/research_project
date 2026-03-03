@@ -5,25 +5,44 @@ import RealTimeChart from './RealTimeChart';
 import StatusCard from './StatusCard';
 
 const Dashboard = () => {
-    const [latest, setLatest] = useState(null);
-    const [history, setHistory] = useState([]);
-    const [alerts, setAlerts] = useState([]);
+    // Initialize state from localStorage if available
+    const [latest, setLatest] = useState(() => {
+        const saved = localStorage.getItem('solar_latest');
+        return saved ? JSON.parse(saved) : null;
+    });
+    const [history, setHistory] = useState(() => {
+        const saved = localStorage.getItem('solar_history');
+        return saved ? JSON.parse(saved) : [];
+    });
+    const [alerts, setAlerts] = useState(() => {
+        const saved = localStorage.getItem('solar_alerts');
+        return saved ? JSON.parse(saved) : [];
+    });
 
     const fetchData = async () => {
         try {
             // Get historical data for charts
             const historyRes = await axios.get('http://localhost:5000/api/readings');
-            setHistory(historyRes.data);
+            const newHistory = historyRes.data;
+            setHistory(newHistory);
+            localStorage.setItem('solar_history', JSON.stringify(newHistory));
 
-            if (historyRes.data.length > 0) {
-                setLatest(historyRes.data[historyRes.data.length - 1]);
+            if (newHistory.length > 0) {
+                const newLatest = newHistory[newHistory.length - 1];
+                setLatest(newLatest);
+                localStorage.setItem('solar_latest', JSON.stringify(newLatest));
             }
 
             // Get Alerts
             const alertsRes = await axios.get('http://localhost:5000/api/alerts');
-            setAlerts(alertsRes.data);
+            const newAlerts = alertsRes.data;
+            setAlerts(newAlerts);
+            localStorage.setItem('solar_alerts', JSON.stringify(newAlerts));
+
         } catch (err) {
-            console.error("API Error:", err);
+            console.error("API Error (Falling back to local cache):", err.message);
+            // In offline mode, state is already preserved or loaded from localStorage 
+            // during the initial useState hook execution.
         }
     };
 
@@ -33,7 +52,7 @@ const Dashboard = () => {
         return () => clearInterval(interval);
     }, []);
 
-    if (!latest) return <div className="text-center mt-20">Loading System Data...</div>;
+    if (!latest) return <div className="text-center mt-20 text-slate-400">Loading System Data... (Waiting for first reading)</div>;
 
     // Determine System Health
     const healthStatus = latest.pred_label === 'Normal' ? 'Healthy' : 'Critical';
