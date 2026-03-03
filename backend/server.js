@@ -47,67 +47,82 @@ const checkAnomaly = async (dataPacket) => {
 
 // --- ENDPOINTS ---
 
-// 1. Data Ingest (From ESP32)
+// 1. Data Ingest (From ESP32 Live or Burst)
 app.post('/api/data', async (req, res) => {
-    const raw = req.body;
+    let payload = req.body;
 
-    // Distributed Computing: Calculate Features
-    const v_min = 10.5;
-    const v_max = 14.4;
-    let soc = ((raw.batt_voltage - v_min) / (v_max - v_min)) * 100;
-    soc = Math.min(Math.max(soc, 0), 100);
+    // Normalize to array to handle both single and burst readings
+    if (!Array.isArray(payload)) {
+        payload = [payload];
+    }
 
-    const power_watts = raw.pv_voltage * raw.pv_current;
+    let processedCount = 0;
 
-    // Simplification for prototype: we don't have historical smooth here easily 
-    // without querying DB. For now, use raw batt_voltage as approximation or 0.
-    const batt_ma = raw.batt_voltage;
+    // Process each reading
+    for (const raw of payload) {
+        // Distributed Computing: Calculate Features
+        const v_min = 10.5;
+        const v_max = 14.4;
+        let soc = ((raw.batt_voltage - v_min) / (v_max - v_min)) * 100;
+        soc = Math.min(Math.max(soc, 0), 100);
 
-    const enrichedData = {
-        pv_voltage: raw.pv_voltage,
-        pv_current: raw.pv_current,
-        batt_voltage: raw.batt_voltage,
-        load_current: raw.load_current,
-        temperature: raw.temp, // ESP32 sends "temp"
-        pv_power_watts: power_watts,
-        net_energy_flux: raw.pv_current - raw.load_current,
-        batt_voltage_ma_10: batt_ma,
-        soc_percent: soc
-    };
+        const power_watts = raw.pv_voltage * raw.pv_current;
+        const batt_ma = raw.batt_voltage;
 
-    console.log(`Received Data. SoC: ${soc.toFixed(1)}%`);
+        const enrichedData = {
+            pv_voltage: raw.pv_voltage,
+            pv_current: raw.pv_current,
+            batt_voltage: raw.batt_voltage,
+            load_current: raw.load_current,
+            temperature: raw.temp,
+            pv_power_watts: power_watts,
+            net_energy_flux: raw.pv_current - raw.load_current,
+            batt_voltage_ma_10: batt_ma,
+            soc_percent: soc
+        };
 
-    // 2. Call ML Engine
-    const mlResult = await checkAnomaly(enrichedData);
-    console.log("ML Prediction:", mlResult);
+        console.log(`Processing Data. SoC: ${soc.toFixed(1)}%`);
 
-    const predLabel = mlResult.status || "Normal";
+        // 2. Call ML Engine
+        const mlResult = await checkAnomaly(enrichedData);
+        console.log("ML Prediction:", mlResult);
 
-    // 3. Save to SQL
-    const sql = `
-        INSERT INTO solar_readings 
-        (pv_voltage, pv_current, batt_voltage, load_current, temperature, pv_power_watts, net_energy_flux, soc_percent, pred_label) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-    const values = [
-        raw.pv_voltage, raw.pv_current, raw.batt_voltage, raw.load_current, raw.temp,
-        power_watts, enrichedData.net_energy_flux, soc, predLabel
-    ];
+        const predLabel = mlResult.status || "Normal";
 
-    db.query(sql, values, (err, result) => {
-        if (err) {
-            console.error("DB Insert Error:", err);
-            return res.status(500).send("Database Error");
+        // Handle custom timestamp from store & forward (if exists)
+        // If timestamp_unix is > 0, we convert it to DATETIME string for MySQL
+        let timeVal = "NOW()";
+        if (raw.timestamp_unix && raw.timestamp_unix > 0) {
+            // Convert UNIX timestamp to SQL DATETIME string
+            timeVal = `FROM_UNIXTIME(${raw.timestamp_unix})`;
         }
 
-        // If Anomaly, log to Alerts table
-        if (predLabel !== "Normal") {
-            const alertSql = "INSERT INTO system_alerts (alert_type, details, severity) VALUES (?, ?, ?)";
-            db.query(alertSql, [predLabel, `SoC: ${soc.toFixed(1)}%, V: ${raw.batt_voltage}`, 'Warning']);
-        }
+        // 3. Save to SQL
+        const sql = `
+            INSERT INTO solar_readings 
+            (timestamp, pv_voltage, pv_current, batt_voltage, load_current, temperature, pv_power_watts, net_energy_flux, soc_percent, pred_label) 
+            VALUES (${timeVal}, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+        const values = [
+            raw.pv_voltage, raw.pv_current, raw.batt_voltage, raw.load_current, raw.temp,
+            power_watts, enrichedData.net_energy_flux, soc, predLabel
+        ];
 
-        res.json({ status: "Saved", ml_status: predLabel });
-    });
+        db.query(sql, values, (err, result) => {
+            if (err) {
+                console.error("DB Insert Error:", err);
+            } else {
+                // If Anomaly, log to Alerts table
+                if (predLabel !== "Normal") {
+                    const alertSql = `INSERT INTO system_alerts (timestamp, alert_type, details, severity) VALUES (${timeVal}, ?, ?, ?)`;
+                    db.query(alertSql, [predLabel, `SoC: ${soc.toFixed(1)}%, V: ${raw.batt_voltage}`, 'Warning']);
+                }
+            }
+        });
+        processedCount++;
+    }
+
+    res.json({ status: "Saved", processed_count: processedCount });
 });
 
 // 2. Dashboard: Get Recent Readings
