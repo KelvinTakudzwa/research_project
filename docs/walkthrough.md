@@ -55,26 +55,111 @@ graph LR
 
 ## 4. How to Run the Demo
 
-1.  **Start MySQL**: Ensure `solar_monitoring` database exists (use `database/schema.sql`).
-2.  **Start Python ML API**:
-    ```bash
-    cd backend
-    python ml_api.py
-    ```
-    (Or `uvicorn ml_api:app --host 127.0.0.1 --port 8000`)
-3.  **Start Backend**:
-    ```bash
-    cd backend
-    node server.js
-    ```
-4.  **Start Dashboard**:
-    ```bash
-    cd frontend
-    npm run dev
-    ```
-4.  **Simulate Data**:
-    Open a new terminal and send a test packet:
-    ```powershell
-    Invoke-RestMethod -Uri 'http://localhost:5000/api/data' -Method Post -ContentType 'application/json' -Body '{"pv_voltage": 18.5, "pv_current": 4.2, "batt_voltage": 12.8, "load_current": 1.5, "temp": 35.0}'
-    ```
-5.  **Observe**: Check the Dashboard at `http://localhost:5173`.
+> [!IMPORTANT]
+> Services must be started in this order. Open **3 separate terminals**.
+
+**Terminal 1 — Python ML API:**
+```powershell
+cd backend; python ml_api.py
+```
+**Terminal 2 — Node.js Backend:**
+```powershell
+cd backend; node server.js
+```
+**Terminal 3 — React Dashboard:**
+```powershell
+cd frontend; npm run dev
+```
+Open the dashboard at **http://localhost:5173**
+
+---
+
+## 5. Live Test Scenarios (PowerShell Commands)
+
+Open a **4th terminal** in the project root and run any of the commands below.  
+After each command, watch the Dashboard at **http://localhost:5173** update in real time.
+
+---
+
+### ✅ Scenario 1 — Bright Sunny Day (Normal)
+**Expected Label:** `Normal`
+> High Irradiance + High PV Current = healthy panel, good battery.
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:5000/api/data' -Method Post -ContentType 'application/json' -Body '{
+  "pv_voltage": 18.8,
+  "pv_current": 4.5,
+  "batt_voltage": 13.9,
+  "load_current": 1.2,
+  "temp": 37.5,
+  "irradiance_lux": 95000
+}'
+```
+
+---
+
+### ☁️ Scenario 2 — Overcast / Cloudy Day (Normal)
+**Expected Label:** `Normal`
+> Low Irradiance + Low PV Current — both low simultaneously = just a cloudy day, NOT a fault.
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:5000/api/data' -Method Post -ContentType 'application/json' -Body '{
+  "pv_voltage": 16.5,
+  "pv_current": 1.2,
+  "batt_voltage": 12.8,
+  "load_current": 1.5,
+  "temp": 28.0,
+  "irradiance_lux": 30000
+}'
+```
+
+---
+
+### 🌞⚠️ Scenario 3 — Shading / Dust Fault (Anomaly)
+**Expected Label:** `Unknown_Anomaly` or `Known_Fault`
+> **High Irradiance + Low PV Current** = the sun is out but the panel isn't generating power. Confirmed physical fault (dust, shading, degradation).
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:5000/api/data' -Method Post -ContentType 'application/json' -Body '{
+  "pv_voltage": 17.9,
+  "pv_current": 0.5,
+  "batt_voltage": 11.8,
+  "load_current": 2.6,
+  "temp": 34.0,
+  "irradiance_lux": 96000
+}'
+```
+
+---
+
+### 🔋⚠️ Scenario 4 — Critical Battery (Low Voltage Fault)
+**Expected Label:** `Known_Fault` or `Unknown_Anomaly`
+> Battery voltage fallen below safe threshold. Sustained heavy load with insufficient solar charging.
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:5000/api/data' -Method Post -ContentType 'application/json' -Body '{
+  "pv_voltage": 0.5,
+  "pv_current": 0.0,
+  "batt_voltage": 10.6,
+  "load_current": 3.5,
+  "temp": 22.0,
+  "irradiance_lux": 500
+}'
+```
+
+---
+
+### 📡 Scenario 5 — Store & Forward Batch (Simulated Offline Burst)
+**ExpectedLabelled Count:** `processed_count: 3`
+> Simulates the ESP32 coming back online after being disconnected. It sends a JSON array of 3 readings captured offline (with their original `timestamp_unix` values).
+```powershell
+Invoke-RestMethod -Uri 'http://localhost:5000/api/data' -Method Post -ContentType 'application/json' -Body '[
+  {"pv_voltage":18.2,"pv_current":3.8,"batt_voltage":13.6,"load_current":1.4,"temp":33.0,"irradiance_lux":80000,"timestamp_unix":1741647600},
+  {"pv_voltage":17.8,"pv_current":3.5,"batt_voltage":13.4,"load_current":1.5,"temp":34.0,"irradiance_lux":75000,"timestamp_unix":1741647660},
+  {"pv_voltage":17.9,"pv_current":0.4,"batt_voltage":12.1,"load_current":2.2,"temp":33.5,"irradiance_lux":94000,"timestamp_unix":1741647720}
+]'
+```
+
+---
+
+### 🗄️ Verify in Database
+Run this at any time to see the last 5 rows with their ML-generated labels:
+```powershell
+mysql -u root -p solar_monitoring -e "SELECT DATE_FORMAT(timestamp,'%H:%i:%s') as time, irradiance_lux, pv_current, ROUND(soc_percent,1) as soc, pred_label FROM solar_readings ORDER BY timestamp DESC LIMIT 5;"
+```
