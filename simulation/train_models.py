@@ -10,8 +10,8 @@ import os
 
 # Configuration
 DATA_PATH = "solar_data_30days.csv"
-MODEL_DIR = "backend/models"
-IMG_DIR = "docs/images"
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend", "models")
+IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "images")
 
 # Ensure directories exist
 os.makedirs(MODEL_DIR, exist_ok=True)
@@ -24,7 +24,7 @@ df = pd.read_csv(DATA_PATH)
 # We exclude 'timestamp' and 'label' from X
 feature_cols = [
     'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
-    'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
+    'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
 ]
 
 # Check if columns exist

@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS solar_readings (
     batt_voltage FLOAT,
     load_current FLOAT,
     temperature FLOAT,
+    irradiance_lux FLOAT,
     -- Derived Features (Calculated by Node.js before insert)
     pv_power_watts FLOAT,
     net_energy_flux FLOAT,

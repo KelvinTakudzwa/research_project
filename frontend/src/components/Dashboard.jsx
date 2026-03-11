@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { AlertTriangle, Battery, Sun, Activity } from 'lucide-react';
+import { AlertTriangle, Battery, Sun, Activity, Zap } from 'lucide-react';
 import RealTimeChart from './RealTimeChart';
 import StatusCard from './StatusCard';
 
@@ -59,8 +59,14 @@ const Dashboard = () => {
     const healthColor = latest.pred_label === 'Normal' ? 'bg-emerald-500' : 'bg-red-500';
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
             {/* KPI Cards */}
+            <StatusCard
+                title="Irradiance"
+                value={`${latest.irradiance_lux?.toFixed(0)} Lux`}
+                icon={<Sun size={24} />}
+                color="text-yellow-200"
+            />
             <StatusCard
                 title="Battery SoC"
                 value={`${latest.soc_percent?.toFixed(1)}%`}
@@ -70,7 +76,7 @@ const Dashboard = () => {
             <StatusCard
                 title="PV Power"
                 value={`${latest.pv_power_watts?.toFixed(1)} W`}
-                icon={<Sun size={24} />}
+                icon={<Zap size={24} />}
                 color="text-yellow-400"
             />
             <StatusCard

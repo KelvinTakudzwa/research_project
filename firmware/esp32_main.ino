@@ -139,11 +139,15 @@ void loop() {
   // DATA ACQUISITION LAYER (Simulated)
   StaticJsonDocument<250> doc;
   
-  doc["pv_voltage"] = random(170, 190) / 10.0;
+  float sim_pv_voltage = random(170, 190) / 10.0;
+  doc["pv_voltage"] = sim_pv_voltage;
   doc["pv_current"] = random(0, 50) / 10.0;
   doc["batt_voltage"] = random(110, 144) / 10.0;
   doc["load_current"] = random(0, 30) / 10.0;
   doc["temp"] = random(250, 400) / 10.0;
+  
+  // Simulate BH1750 Lux sensor based roughly on PV voltage (Proxy for sunlight)
+  doc["irradiance_lux"] = sim_pv_voltage * 5000 + random(0, 5000);
   
   // Inject calculated timestamp
   doc["timestamp_unix"] = getCurrentTimestamp();

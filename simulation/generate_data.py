@@ -18,6 +18,7 @@ pv_current = []
 batt_voltage = []
 load_current = []
 temperature = []
+irradiance_lux = [] # NEW SENSOR
 labels = [] # 0 = Normal, 1 = Anomaly
 
 # Simulation State
@@ -35,12 +36,15 @@ for step in range(TOTAL_STEPS):
     irradiance = 0
     if 6 <= hour <= 18:
         # Peak at noon (12), width approx 6 hours either side
-        # Simple parabola: -a*(x-h)^2 + k
         irradiance = max(0, 1000 * np.sin((hour - 6) * np.pi / 12)) 
         
         # Add random cloud cover noise
         if random.random() < 0.1: # 10% chance of clouds
             irradiance *= random.uniform(0.2, 0.8)
+            
+    # Convert W/m^2 proxy to Lux proxy (roughly x116 for sunlight)
+    lux_val = irradiance * 116.0 + np.random.normal(0, 50)
+    irradiance_lux.append(round(max(0, lux_val), 1))
     
     # 2. PV Output (Voltage is roughly constant when sun is up, Current ~ Irradiance)
     if irradiance > 10:
@@ -55,6 +59,15 @@ for step in range(TOTAL_STEPS):
     p_amps = max(0, p_amps)
     p_volts = max(0, p_volts)
     
+    # 6. Fault Injection (Anomaly Label)
+    is_anomaly = 0
+    
+    # Scenario A: Shading/Dust (High Irradiance, but Low PV Current)
+    # 5% chance between 11am and 1pm
+    if 11 <= hour <= 13 and lux_val > 80000 and random.random() < 0.05:
+        p_amps *= 0.20 # Current drops by 80% due to simulated thick dust/shade
+        is_anomaly = 1 
+        
     pv_voltage.append(round(p_volts, 2))
     pv_current.append(round(p_amps, 2))
     
@@ -70,16 +83,8 @@ for step in range(TOTAL_STEPS):
     load_current.append(round(l_amps, 2))
     
     # 4. Battery Logic (Coulomb Counting)
-    # Net current = Solar Input - Load Output
-    # Simple model: V = V_nominal + (StateOfCharge * Coeff) - (NetCurrent * R_internal)
     net_current = p_amps - l_amps
-    
-    # Change in charge (Amp-hours)
     delta_ah = net_current * dt_hours
-    
-    # Update fake "Voltage" based on net flow (simplified lead-acid curve proxy)
-    # Charge increases voltage, Discharge decreases it
-    # Clamp between 11.0V (empty) and 14.4V (charging)
     
     # "Resting" change
     if net_current > 0:
@@ -91,31 +96,21 @@ for step in range(TOTAL_STEPS):
     target_v = 12.7 if net_current == 0 else (14.0 if net_current > 0 else 11.5)
     current_batt_voltage = current_batt_voltage * 0.99 + target_v * 0.01 # Drift to steady state
     
-    # Add noise
+    # Add noise & Limits
     current_batt_voltage += np.random.normal(0, 0.02)
-    
-    # Limits
     current_batt_voltage = max(10.5, min(14.8, current_batt_voltage))
     batt_voltage.append(round(current_batt_voltage, 2))
     
+    # Scenario B: Battery degradation (Voltage drops too fast under load)
+    if current_batt_voltage < 11.0:
+        is_anomaly = 1
+        
     # 5. Temperature (Ambient follows sun, Battery heats on high current)
     ambient = 25 - 5 * np.cos((hour - 4) * np.pi / 12) # Coldest at 4am
     batt_heat = abs(net_current) * 0.5 # I^2R heating proxy
     temp_val = ambient + batt_heat + np.random.normal(0, 0.5)
     temperature.append(round(temp_val, 2))
     
-    # 6. Fault Injection (Anomaly Label)
-    is_anomaly = 0
-    
-    # Scenario A: Shading/Dust (Low PV Current at noon)
-    if 11 <= hour <= 13 and irradiance > 800 and p_amps < 1.0:
-        is_anomaly = 1 # Anomaly
-        
-    # Scenario B: Battery degradation (Voltage drops too fast under load)
-    # (Not explicitly modeled in physics here, but we can flag low voltage events)
-    if current_batt_voltage < 11.0:
-        is_anomaly = 1
-        
     labels.append(is_anomaly)
 
 # DataFrame
@@ -126,6 +121,7 @@ df = pd.DataFrame({
     'batt_voltage': batt_voltage,
     'load_current': load_current,
     'temperature': temperature,
+    'irradiance_lux': irradiance_lux,
     'label': labels
 })
 
