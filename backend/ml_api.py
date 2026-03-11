@@ -32,6 +32,7 @@ class SensorData(BaseModel):
     batt_voltage: float
     load_current: float
     temperature: float
+    irradiance_lux: float
     pv_power_watts: float
     net_energy_flux: float
     batt_voltage_ma_10: float
@@ -49,7 +50,7 @@ def predict_anomaly(data: SensorData):
     # Prepare DataFrame matching training shape
     feature_cols = [
         'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
-        'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
+        'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
     ]
     
     # Create DataFrame from request body

@@ -75,6 +75,7 @@ app.post('/api/data', async (req, res) => {
             batt_voltage: raw.batt_voltage,
             load_current: raw.load_current,
             temperature: raw.temp,
+            irradiance_lux: raw.irradiance_lux || 0,
             pv_power_watts: power_watts,
             net_energy_flux: raw.pv_current - raw.load_current,
             batt_voltage_ma_10: batt_ma,
@@ -100,11 +101,11 @@ app.post('/api/data', async (req, res) => {
         // 3. Save to SQL
         const sql = `
             INSERT INTO solar_readings 
-            (timestamp, pv_voltage, pv_current, batt_voltage, load_current, temperature, pv_power_watts, net_energy_flux, soc_percent, pred_label) 
-            VALUES (${timeVal}, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (timestamp, pv_voltage, pv_current, batt_voltage, load_current, temperature, irradiance_lux, pv_power_watts, net_energy_flux, soc_percent, pred_label) 
+            VALUES (${timeVal}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         const values = [
-            raw.pv_voltage, raw.pv_current, raw.batt_voltage, raw.load_current, raw.temp,
+            raw.pv_voltage, raw.pv_current, raw.batt_voltage, raw.load_current, raw.temp, raw.irradiance_lux || 0,
             power_watts, enrichedData.net_energy_flux, soc, predLabel
         ];
 
