@@ -1,189 +1,261 @@
+// ============================================================
+// ESP32 Solar Mini-Grid IoT Node Firmware
+// Phase 8: MQTT QoS 1 Protocol Upgrade
+//
+// MQTT Library: MQTT by Joel Gaehwiler (supports true QoS 1 PUBACK)
+// Install in Arduino IDE: Sketch > Include Library > Manage Libraries
+// Search: "MQTT" by Joel Gaehwiler (github.com/256dpi/arduino-mqtt)
+// ============================================================
+
 #include <WiFi.h>
-#include <HTTPClient.h>
+#include <MQTT.h>          // Joel Gaehwiler's library — supports QoS 1 PUBACK
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include "time.h"
 
-// NETWORK CONFIGURATION
-// TODO: User must update these before flashing!
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
+// ============================================================
+// NETWORK & BROKER CONFIGURATION
+// TODO: Update WIFI credentials and BROKER IP before flashing!
+// ============================================================
+const char* WIFI_SSID     = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 
-// SERVER CONFIGURATION
-// Replace '192.168.1.XX' with your Computer's Local IP Address
-const char* serverName = "http://192.168.1.XX:5000/api/data"; 
+// Replace with your laptop's LOCAL IP (run `ipconfig` on Windows)
+const char* MQTT_BROKER_IP   = "192.168.1.XX";
+const int   MQTT_BROKER_PORT = 1883;
+const char* MQTT_CLIENT_ID   = "ESP32_SolarNode_01";
+const char* MQTT_TOPIC       = "solar/data";
 
-// TIME TRACKING
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 0; // Set to 0, Backend can handle timezone/GMT
-const int   daylightOffset_sec = 0;
+// ============================================================
+// TIME TRACKING (NTP + millis() fallback for offline timestamps)
+// ============================================================
+const char* NTP_SERVER       = "pool.ntp.org";
+const long  GMT_OFFSET_SEC   = 0;
+const int   DST_OFFSET_SEC   = 0;
 
 unsigned long lastSyncMillis = 0;
-time_t lastNtpTime = 0;
-bool timeSynced = false;
+time_t        lastNtpTime    = 0;
+bool          timeSynced     = false;
 
-const char* BACKLOG_FILE = "/backlog.txt";
+// ============================================================
+// STORE & FORWARD CONFIG
+// ============================================================
+const char* BACKLOG_FILE    = "/backlog.txt";
+const int   BURST_CHUNK_SZ  = 5;   // Publish this many lines per chunk (WDT safety)
+const int   PAYLOAD_MAX_SZ  = 512; // Must match MQTT library's max packet size
 
+// ============================================================
+// MQTT & WIFI CLIENTS
+// ============================================================
+WiFiClient   wifiNet;
+MQTTClient   mqttClient(PAYLOAD_MAX_SZ); // Set max packet size to 512 bytes
+
+// ============================================================
+// SETUP
+// ============================================================
 void setup() {
   Serial.begin(115200);
-  
-  // Initialize LittleFS
+
+  // Initialize LittleFS for Store & Forward
   if (!LittleFS.begin(true)) {
-    Serial.println("LittleFS Mount Failed");
+    Serial.println("[LittleFS] CRITICAL: Mount failed.");
     return;
   }
-  Serial.println("LittleFS Mounted Successfully");
+  Serial.println("[LittleFS] Mounted.");
 
-  // Connect to WiFi
-  WiFi.begin(ssid, password);
-  Serial.println("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) { 
-    delay(500); 
-    Serial.print("."); 
-  }
-  Serial.println("\nWiFi Connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
-
-  // Init and Sync NTP Time
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  syncTime();
+  connectWiFi();
+  syncNTP();
+  connectMQTT();
 }
 
-void syncTime() {
+// ============================================================
+// WIFI CONNECTION
+// ============================================================
+void connectWiFi() {
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("[WiFi] Connecting");
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
+  } else {
+    Serial.println("\n[WiFi] Failed. Will retry in loop.");
+  }
+}
+
+// ============================================================
+// NTP TIME SYNC
+// ============================================================
+void syncNTP() {
+  configTime(GMT_OFFSET_SEC, DST_OFFSET_SEC, NTP_SERVER);
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    time(&lastNtpTime); // Get unix epoch
+    time(&lastNtpTime);
     lastSyncMillis = millis();
     timeSynced = true;
-    Serial.println("Time successfully synced via NTP.");
+    Serial.println("[NTP] Time synced successfully.");
   } else {
-    Serial.println("Failed to obtain time.");
+    Serial.println("[NTP] Sync failed — using millis() fallback.");
   }
 }
 
-// Helper: Calculate current Unix timestamp (handles offline fallback via millis)
 time_t getCurrentTimestamp() {
-  if (!timeSynced) {
-    return 0; // Return 0 if we never synced
+  if (!timeSynced) return 0;
+  // Re-sync every 1 hour while online
+  if (WiFi.status() == WL_CONNECTED && (millis() - lastSyncMillis > 3600000)) {
+    syncNTP();
   }
-  // If WiFi is connected, opportunistically re-sync the baseline
-  if (WiFi.status() == WL_CONNECTED && (millis() - lastSyncMillis > 3600000)) { // 1 hour
-     syncTime();
-  }
-  
-  unsigned long elapsedMillis = millis() - lastSyncMillis;
-  return lastNtpTime + (elapsedMillis / 1000);
+  return lastNtpTime + ((millis() - lastSyncMillis) / 1000);
 }
 
+// ============================================================
+// MQTT CONNECTION (Gaehwiler library — true QoS 1 support)
+// ============================================================
+void connectMQTT() {
+  mqttClient.begin(MQTT_BROKER_IP, MQTT_BROKER_PORT, wifiNet);
+  Serial.print("[MQTT] Connecting to broker");
+  int attempts = 0;
+  while (!mqttClient.connect(MQTT_CLIENT_ID) && attempts < 10) {
+    Serial.print(".");
+    delay(500);
+    attempts++;
+  }
+  if (mqttClient.connected()) {
+    Serial.printf("\n[MQTT] Connected. Publishing to topic: %s (QoS 1)\n", MQTT_TOPIC);
+  } else {
+    Serial.println("\n[MQTT] Broker unreachable. Will store data locally.");
+  }
+}
+
+// ============================================================
+// STORE LOCALLY (NDJSON append — corruption-safe)
+// ============================================================
+void storeLocally(const String& ndjsonLine) {
+  File file = LittleFS.open(BACKLOG_FILE, "a");
+  if (!file) {
+    Serial.println("[LittleFS] ERROR: Cannot open backlog for writing.");
+    return;
+  }
+  file.println(ndjsonLine);
+  file.close();
+  Serial.println("[LittleFS] Reading stored locally.");
+}
+
+// ============================================================
+// SEND BACKLOG (WDT-safe chunked burst recovery)
+// ============================================================
 void sendBacklog() {
   if (!LittleFS.exists(BACKLOG_FILE)) return;
-  
+
   File file = LittleFS.open(BACKLOG_FILE, "r");
   if (!file || file.size() == 0) {
     if (file) file.close();
     return;
   }
 
-  Serial.println("Backlog found. Preparing burst transmission...");
-  
-  // Create JSON Array payload in memory: [{},{},{}]
-  String payload = "[";
-  bool firstLine = true;
-  
+  Serial.printf("[LittleFS] Backlog found (%d bytes). Starting chunked burst...\n", file.size());
+
+  // Collect all lines into memory first, then publish in chunks
+  std::vector<String> lines;
   while (file.available()) {
     String line = file.readStringUntil('\n');
     line.trim();
-    if (line.length() > 0) {
-      if (!firstLine) {
-        payload += ",";
-      }
-      payload += line;
-      firstLine = false;
-    }
+    if (line.length() > 0) lines.push_back(line);
   }
-  payload += "]";
   file.close();
 
-  // Send Burst Payload
-  HTTPClient http;
-  http.begin(serverName);
-  http.addHeader("Content-Type", "application/json");
-  
-  int httpResponseCode = http.POST(payload);
-  Serial.print("Burst HTTP Response code: ");
-  Serial.println(httpResponseCode);
-  
-  http.end();
+  int total   = lines.size();
+  int success = 0;
 
-  if (httpResponseCode > 0 && httpResponseCode < 300) {
-    Serial.println("Backlog sent successfully. Deleting file...");
+  for (int i = 0; i < total; i++) {
+    // Publish each backlog reading as a QoS 1 MQTT message
+    bool ok = mqttClient.publish(MQTT_TOPIC, lines[i], false, 1);
+    if (ok) {
+      success++;
+    } else {
+      Serial.printf("[MQTT] Publish failed for backlog line %d — stopping burst.\n", i);
+      break; // Abort and retry next cycle
+    }
+
+    // Chunk boundary: every BURST_CHUNK_SZ lines, yield to watchdog + WiFi stack
+    if ((i + 1) % BURST_CHUNK_SZ == 0) {
+      mqttClient.loop();    // Process PUBACK handshakes
+      yield();              // Feed ESP32 Hardware Watchdog Timer (WDT)
+      delay(10);            // Allow WiFi stack to breathe
+      Serial.printf("[MQTT] Burst chunk: %d/%d sent.\n", i + 1, total);
+    }
+  }
+
+  Serial.printf("[MQTT] Burst complete: %d/%d readings delivered.\n", success, total);
+
+  if (success == total) {
     LittleFS.remove(BACKLOG_FILE);
+    Serial.println("[LittleFS] Backlog cleared.");
   } else {
-    Serial.println("Backlog transmission failed. Will retry later.");
+    Serial.println("[LittleFS] Partial burst — backlog kept for next retry.");
   }
 }
 
-void storeLocally(const String& ndjsonLine) {
-  File file = LittleFS.open(BACKLOG_FILE, "a");
-  if (!file) {
-    Serial.println("Failed to open file for appending");
+// ============================================================
+// MAIN LOOP
+// ============================================================
+void loop() {
+  mqttClient.loop(); // Process MQTT keep-alive and PUBACK responses
+
+  // ── DATA ACQUISITION (Simulated sensors) ────────────────
+  float sim_pv_voltage = random(170, 190) / 10.0;
+
+  StaticJsonDocument<PAYLOAD_MAX_SZ> doc;
+  doc["pv_voltage"]     = sim_pv_voltage;
+  doc["pv_current"]     = random(0, 50)  / 10.0;
+  doc["batt_voltage"]   = random(110, 144) / 10.0;
+  doc["load_current"]   = random(0, 30)  / 10.0;
+  doc["temp"]           = random(250, 400) / 10.0;
+  // Simulated BH1750 irradiance (scaled from PV voltage proxy)
+  doc["irradiance_lux"] = (int)(sim_pv_voltage * 5000) + random(0, 5000);
+  doc["timestamp_unix"] = (long)getCurrentTimestamp();
+
+  String payload;
+  serializeJson(doc, payload);
+
+  // ── TRANSMISSION ────────────────────────────────────────
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WiFi] Disconnected — storing reading locally.");
+    storeLocally(payload);
+    connectWiFi(); // Attempt reconnect
+    delay(60000);
     return;
   }
-  file.println(ndjsonLine);
-  file.close();
-  Serial.println("Data stored locally (NDJSON format).");
-}
 
-void loop() {
-  // DATA ACQUISITION LAYER (Simulated)
-  StaticJsonDocument<250> doc;
-  
-  float sim_pv_voltage = random(170, 190) / 10.0;
-  doc["pv_voltage"] = sim_pv_voltage;
-  doc["pv_current"] = random(0, 50) / 10.0;
-  doc["batt_voltage"] = random(110, 144) / 10.0;
-  doc["load_current"] = random(0, 30) / 10.0;
-  doc["temp"] = random(250, 400) / 10.0;
-  
-  // Simulate BH1750 Lux sensor based roughly on PV voltage (Proxy for sunlight)
-  doc["irradiance_lux"] = sim_pv_voltage * 5000 + random(0, 5000);
-  
-  // Inject calculated timestamp
-  doc["timestamp_unix"] = getCurrentTimestamp();
-
-  String requestBody;
-  serializeJson(doc, requestBody);
-
-  // Check connection
-  if (WiFi.status() == WL_CONNECTED) {
-    // If we have connection, first try sending backlog
-    sendBacklog();
-
-    // Now send the current reading
-    HTTPClient http;
-    http.begin(serverName);
-    http.addHeader("Content-Type", "application/json");
-
-    int httpResponseCode = http.POST(requestBody);
-    
-    Serial.print("Sending Live Data: ");
-    Serial.println(requestBody);
-    Serial.print("HTTP Response code: ");
-    Serial.println(httpResponseCode);
-    
-    http.end();
-
-    if (httpResponseCode <= 0 || httpResponseCode >= 300) {
-       // Request failed despite WiFi connection (e.g. server down)
-       storeLocally(requestBody); 
-    }
-  } else {
-    // No WiFi -> Store Locally Immediately
-    Serial.println("WiFi Disconnected. Storing for later...");
-    storeLocally(requestBody);
+  // WiFi is connected — try to ensure MQTT is also connected
+  if (!mqttClient.connected()) {
+    Serial.println("[MQTT] Disconnected — reconnecting...");
+    connectMQTT();
   }
 
-  // WAIT LAYER (1 minute)
-  delay(60000); 
+  if (mqttClient.connected()) {
+    // First: drain any backlog from offline period
+    sendBacklog();
+
+    // Then: publish current reading via QoS 1
+    Serial.print("[MQTT] Publishing: "); Serial.println(payload);
+    bool ok = mqttClient.publish(MQTT_TOPIC, payload, false, 1); // QoS 1, non-retained
+    if (!ok) {
+      Serial.println("[MQTT] Publish failed — storing locally as fallback.");
+      storeLocally(payload);
+    } else {
+      Serial.println("[MQTT] Published OK (QoS 1 PUBACK expected).");
+    }
+  } else {
+    // Broker still unreachable — fall back to LittleFS
+    Serial.println("[MQTT] Broker unreachable — storing locally.");
+    storeLocally(payload);
+  }
+
+  // ── WAIT (1 reading per minute) ─────────────────────────
+  delay(60000);
 }

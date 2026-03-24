@@ -12,6 +12,7 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^5.2.1",
+    "mqtt": "^5.15.0",
     "mysql2": "^3.16.0"
   }
 }
