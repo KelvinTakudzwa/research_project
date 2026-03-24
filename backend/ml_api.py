@@ -1,29 +1,42 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import pickle
 import pandas as pd
 import os
+import threading
+from apscheduler.schedulers.background import BackgroundScheduler
+from ml_runner import retrain_isolation_forest
 
 app = FastAPI(title="Solar ML API", description="Microservice for predicting solar mini-grid anomalies.")
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models')
 
-# Load Models globally on startup (improves latency significantly)
-try:
-    with open(f"{MODEL_DIR}/rf_model.pkl", 'rb') as f:
-        rf_model = pickle.load(f)
-    print("Random Forest model loaded.")
-except Exception as e:
-    rf_model = None
-    print(f"Error loading RF model: {e}")
+# Global Thread Lock to prevent prediction crashes during hot-swaps
+model_lock = threading.Lock()
 
-try:
-    with open(f"{MODEL_DIR}/if_model.pkl", 'rb') as f:
-        if_model = pickle.load(f)
-    print("Isolation Forest model loaded.")
-except Exception as e:
-    if_model = None
-    print(f"Error loading IF model: {e}")
+def load_models():
+    """Dynamically loads or reloads the ML models from disk"""
+    global rf_model, if_model
+    with model_lock:
+        print("[ML_API] Loading models from disk...")
+        try:
+            with open(f"{MODEL_DIR}/rf_model.pkl", 'rb') as f:
+                rf_model = pickle.load(f)
+            print("[ML_API] Random Forest model loaded.")
+        except Exception as e:
+            rf_model = None
+            print(f"[ML_API] Error loading RF model: {e}")
+
+        try:
+            with open(f"{MODEL_DIR}/if_model.pkl", 'rb') as f:
+                if_model = pickle.load(f)
+            print("[ML_API] Isolation Forest model loaded.")
+        except Exception as e:
+            if_model = None
+            print(f"[ML_API] Error loading IF model: {e}")
+
+# Initial load on startup
+load_models()
 
 # Pydantic schema for incoming sensor data
 class SensorData(BaseModel):
@@ -42,30 +55,62 @@ class SensorData(BaseModel):
 def read_root():
     return {"status": "ML API is running."}
 
+# ==========================================================
+# RETRAINING PIPELINE (Background Task preventing event-loop blocks)
+# ==========================================================
+def background_training_task():
+    """Runs the CPU-heavy Scikit-learn fit off the main event loop"""
+    success = retrain_isolation_forest()
+    if success:
+        # Hot-reload the new model dynamically into memory!
+        load_models()
+
+@app.post("/trigger_retraining")
+def trigger_retraining(background_tasks: BackgroundTasks):
+    """Manual endpoint for demonstration / admin force-retrain"""
+    print("[ML_API] Manual retraining triggered.")
+    background_tasks.add_task(background_training_task)
+    return {"status": "Accepted", "message": "Retraining started in the background."}
+
+# ==========================================================
+# SCHEDULER (APScheduler handles the 7-day periodic logic)
+# ==========================================================
+scheduler = BackgroundScheduler()
+# Run background_training_task every 7 days quietly inside this process
+scheduler.add_job(background_training_task, 'interval', days=7)
+scheduler.start()
+
+# Shutdown handler for scheduler
+@app.on_event("shutdown")
+def shutdown_event():
+    scheduler.shutdown()
+
 @app.post("/predict")
 def predict_anomaly(data: SensorData):
-    if not rf_model or not if_model:
-        raise HTTPException(status_code=500, detail="Models not loaded properly.")
+    # Engage Thread Lock for predictions
+    with model_lock:
+        if not rf_model or not if_model:
+            raise HTTPException(status_code=500, detail="Models not loaded properly.")
 
-    # Prepare DataFrame matching training shape
-    feature_cols = [
-        'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
-        'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
-    ]
-    
-    # Create DataFrame from request body
-    df = pd.DataFrame([data.model_dump()])
-    
-    # Select ordered features (just to be safe)
-    X = df[feature_cols]
+        # Prepare DataFrame matching training shape
+        feature_cols = [
+            'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
+            'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
+        ]
+        
+        # Create DataFrame from request body
+        df = pd.DataFrame([data.model_dump()])
+        
+        # Select ordered features (just to be safe)
+        X = df[feature_cols]
 
-    # 1. Random Forest Prediction (Health Class)
-    rf_pred = rf_model.predict(X)[0] # 0 = Normal, 1 = Anomaly
-    
-    # 2. Isolation Forest Prediction (Outlier Check)
-    # IF returns 1 for Inlier (Normal), -1 for Outlier
-    if_pred = if_model.predict(X)[0] 
-    is_outlier = True if if_pred == -1 else False
+        # 1. Random Forest Prediction (Health Class)
+        rf_pred = rf_model.predict(X)[0] # 0 = Normal, 1 = Anomaly
+        
+        # 2. Isolation Forest Prediction (Outlier Check)
+        # IF returns 1 for Inlier (Normal), -1 for Outlier
+        if_pred = if_model.predict(X)[0] 
+        is_outlier = True if if_pred == -1 else False
 
     # Logic: If RF says Anomaly OR IF says Outlier -> Flag it
     final_status = "Normal"

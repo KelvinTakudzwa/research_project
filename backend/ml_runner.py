@@ -1,85 +1,73 @@
-import sys
-import json
+import os
 import pickle
 import pandas as pd
-import numpy as np
-import os
+import mysql.connector
+from sklearn.ensemble import IsolationForest
 
-# Configuration
 MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models')
 
-# Load Models (Global to avoid reloading on every call if checking via direct shell, 
-# but for CLI args we verify each time)
-# Note: In a high-scale production, we'd wrap this in a Flask microservice.
-# For this prototype, loading pickle per request is acceptable (latency ~0.5s).
+# Avoid hardcoding DB credentials ideally, use ENV vars.
+DB_HOST = os.environ.get('DB_HOST', 'localhost')
+DB_USER = os.environ.get('DB_USER', 'root')
+DB_PASSWORD = os.environ.get('DB_PASSWORD', '0786682192@Tk')
+DB_NAME = os.environ.get('DB_NAME', 'solar_monitoring')
 
-def load_models():
+def retrain_isolation_forest():
+    """
+    Extracts the last 30 days of 'Normal' data from MySQL and retrains the Isolation Forest model.
+    Addresses Concept Drift (e.g., panel degradation) without cementing Anomalies as baselines.
+    """
+    print("[Retrainer] Initiating Isolation Forest automated retraining pipeline...")
+    
     try:
-        with open(f"{MODEL_DIR}/rf_model.pkl", 'rb') as f:
-            rf = pickle.load(f)
-        with open(f"{MODEL_DIR}/if_model.pkl", 'rb') as f:
-            iso = pickle.load(f)
-        return rf, iso
-    except Exception as e:
-        return None, None
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        
+        # 1. Database Extraction (Anomaly Filtered & 30-Day Window)
+        query = """
+            SELECT pv_voltage, pv_current, batt_voltage, load_current, temperature,
+                   irradiance_lux, pv_power_watts, net_energy_flux, batt_voltage_ma_10, soc_percent 
+            FROM solar_readings 
+            WHERE pred_label = 'Normal' 
+              AND timestamp >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            ORDER BY timestamp DESC
+        """
+        df = pd.read_sql(query, conn)
+        conn.close()
 
-def predict(data_packet):
-    rf_model, if_model = load_models()
-    
-    if not rf_model or not if_model:
-        return {"error": "Models not found"}
+        # 2. Data Validation
+        if len(df) < 100:
+            print(f"[Retrainer] Aborted: Insufficient healthy data ({len(df)} rows). Need at least 100.")
+            return False
 
-    # Prepare DataFrame matching training shape
-    # Expected keys: pv_voltage, pv_current, batt_voltage, load_current, temperature,
-    #                pv_power_watts, net_energy_flux, batt_voltage_ma_10, soc_percent
-    
-    # We must ensure feature order matches training exactly
-    feature_cols = [
-        'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
-        'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
-    ]
-    
-    # Create DF
-    df = pd.DataFrame([data_packet])
-    
-    # Ensure all columns exist (fill 0 if missing, though Node.js should provide all)
-    for col in feature_cols:
-        if col not in df.columns:
-            df[col] = 0
+        print(f"[Retrainer] Successfully extracted {len(df)} healthy records. Training model...")
+
+        # 3. Model Training (CPU Bound)
+        # Assuming typical contamination rate is ~5%
+        new_iso_forest = IsolationForest(
+            n_estimators=100,
+            contamination=0.05,
+            random_state=42,
+            n_jobs=-1 # Utilize all cores
+        )
+        new_iso_forest.fit(df)
+        
+        # 4. Save to Disk
+        model_path = os.path.join(MODEL_DIR, "if_model.pkl")
+        with open(model_path, 'wb') as f:
+            pickle.dump(new_iso_forest, f)
             
-    # Select ordered features
-    X = df[feature_cols]
+        print("[Retrainer] Isolation Forest successfully retrained and saved to disk.")
+        return True
 
-    # 1. Random Forest Prediction (Health Class)
-    rf_pred = rf_model.predict(X)[0] # 0 = Normal, 1 = Anomaly
-    
-    # 2. Isolation Forest Prediction (Outlier Check)
-    # IF returns 1 for Inlier (Normal), -1 for Outlier
-    if_pred = if_model.predict(X)[0] 
-    is_outlier = True if if_pred == -1 else False
-
-    # Logic: If RF says Anomaly OR IF says Outlier -> Flag it
-    # We prioritize RF for specific labels if we had multiclass, 
-    # but here 1=Anomaly.
-    
-    final_status = "Normal"
-    if rf_pred == 1:
-        final_status = "Known_Fault"
-    elif is_outlier:
-        final_status = "Unknown_Anomaly"
-
-    return {
-        "status": final_status,
-        "rf_pred": int(rf_pred),
-        "is_outlier": bool(is_outlier)
-    }
-
-if __name__ == "__main__":
-    # Input: JSON string as first argument
-    try:
-        raw_json = sys.argv[1]
-        data = json.loads(raw_json)
-        result = predict(data)
-        print(json.dumps(result))
     except Exception as e:
-        print(json.dumps({"error": str(e)}))
+        print(f"[Retrainer] FATAL ERROR during retraining: {e}")
+        return False
+
+# Can be run as a standalone script for manual OS cron jobs
+if __name__ == "__main__":
+    retrain_isolation_forest()
