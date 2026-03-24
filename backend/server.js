@@ -120,7 +120,7 @@ const MQTT_TOPIC  = 'solar/data';
 
 const mqttClient = mqtt.connect(MQTT_BROKER, {
     clientId: 'NodeJS_SolarBackend',  // Hardcoded — consistent across restarts
-    clean: false,                      // Persistent session: broker queues missed QoS 1 messages
+    clean: true,                       // Clear stale session on connect
     reconnectPeriod: 3000,
     connectTimeout: 10000
 });
