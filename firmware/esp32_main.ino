@@ -15,6 +15,7 @@
 #include "time.h"
 #include <Wire.h>          // I2C bus for DS3231
 #include <RTClib.h>        // Adafruit RTClib — DS3231 driver
+#include <Preferences.h>   // NVS storage for ACS712 calibration
 
 // ============================================================
 // NETWORK & BROKER CONFIGURATION
@@ -42,6 +43,23 @@ const int   DST_OFFSET_SEC   = 0;
 RTC_DS3231    rtc;                // DS3231 hardware RTC object
 bool          rtcAvailable = false; // set true if DS3231 found on I2C bus
 
+// ============================================================
+// ACS712 CALIBRATION (NVS & Environmental State Tracking)
+// ============================================================
+Preferences preferences;
+
+// Dynamic Zero-points (initialized to default 1860, loaded from NVS in setup)
+int pvZeroPoint   = 1860;
+int loadZeroPoint = 1860;
+
+// Tracking for BH1750 "Nighttime Trick" (PV Calibration)
+unsigned long darkStartTime = 0;
+bool          isDark        = false;
+bool          pvCalibratedToday = false; // reset every morning
+
+const int     DARK_THRESHOLD_LUX = 2;       // Pitch black
+const long    DARK_DURATION_MS   = 300000;  // 5 minutes
+
 // millis() fallback (used ONLY if both RTC and NTP fail — last resort)
 unsigned long lastSyncMillis = 0;
 time_t        lastNtpTime    = 0;
@@ -65,6 +83,12 @@ MQTTClient   mqttClient(PAYLOAD_MAX_SZ); // Set max packet size to 512 bytes
 // ============================================================
 void setup() {
   Serial.begin(115200);
+
+  // Initialize NVS and load calibration baselines
+  preferences.begin("solar_cal", false);
+  pvZeroPoint   = preferences.getInt("pvZero", 1860);
+  loadZeroPoint = preferences.getInt("loadZero", 1860);
+  Serial.printf("[ACS712] Loaded Baseline -> PV: %d, Load: %d\n", pvZeroPoint, loadZeroPoint);
 
   // Initialize I2C for DS3231
   Wire.begin();
@@ -149,6 +173,34 @@ void syncNTP() {
 }
 
 // ============================================================
+// ACS712 AUTO-ZERO CALIBRATION ROUTINES
+// ============================================================
+void calibratePV() {
+  Serial.println("[ACS712] Executing PV Auto-Calibration (Environmental State: Pitch Black)...");
+  // Simulated ADC averaging over 200 samples
+  int sum = 0;
+  for (int i = 0; i < 200; i++) sum += 1840 + random(0, 10);
+  pvZeroPoint = sum / 200;
+  
+  // Save securely to NVS
+  preferences.putInt("pvZero", pvZeroPoint);
+  pvCalibratedToday = true;
+  Serial.printf("[ACS712] PV Zero baseline updated to: %d\n", pvZeroPoint);
+}
+
+void calibrateLoad() {
+  Serial.println("[ACS712] Executing Load Manual-Calibration (MQTT Triggered)...");
+  // Simulated ADC averaging over 200 samples
+  int sum = 0;
+  for (int i = 0; i < 200; i++) sum += 1845 + random(0, 10);
+  loadZeroPoint = sum / 200;
+  
+  // Save securely to NVS
+  preferences.putInt("loadZero", loadZeroPoint);
+  Serial.printf("[ACS712] Load Zero baseline updated to: %d\n", loadZeroPoint);
+}
+
+// ============================================================
 // GET CURRENT TIMESTAMP — Priority: DS3231 > NTP/millis() fallback
 // ============================================================
 time_t getCurrentTimestamp() {
@@ -172,10 +224,23 @@ time_t getCurrentTimestamp() {
 
 
 // ============================================================
-// MQTT CONNECTION (Gaehwiler library — true QoS 1 support)
+// MQTT CONNECTION & CALLBACK
 // ============================================================
+void messageReceived(String &topic, String &payload) {
+  Serial.println("[MQTT] Incoming: " + topic + " - " + payload);
+  if (topic == "solar/control") {
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, payload);
+    if (!err && doc["cmd"] == "calibrate_load") {
+      calibrateLoad();
+    }
+  }
+}
+
 void connectMQTT() {
   mqttClient.begin(MQTT_BROKER_IP, MQTT_BROKER_PORT, wifiNet);
+  mqttClient.onMessage(messageReceived); // Attach the listener here
+  
   Serial.print("[MQTT] Connecting to broker");
   int attempts = 0;
   while (!mqttClient.connect(MQTT_CLIENT_ID) && attempts < 10) {
@@ -184,7 +249,9 @@ void connectMQTT() {
     attempts++;
   }
   if (mqttClient.connected()) {
-    Serial.printf("\n[MQTT] Connected. Publishing to topic: %s (QoS 1)\n", MQTT_TOPIC);
+    Serial.printf("\n[MQTT] Connected. Publishing: %s (QoS 1)\n", MQTT_TOPIC);
+    // Subscribe to control commands (QoS 1)
+    mqttClient.subscribe("solar/control", 1);
   } else {
     Serial.println("\n[MQTT] Broker unreachable. Will store data locally.");
   }
@@ -267,15 +334,32 @@ void loop() {
 
   // ── DATA ACQUISITION (Simulated sensors) ────────────────
   float sim_pv_voltage = random(170, 190) / 10.0;
+  int current_lux      = (int)(sim_pv_voltage * 5000) + random(0, 5000); // Simulated BH1750
+  
+  // ── THE BH1750 NIGHTTIME TRICK (PV AUTO-CALIBRATION) ────
+  if (current_lux < DARK_THRESHOLD_LUX) {
+    if (!isDark) {
+      isDark = true;
+      darkStartTime = millis();
+    } else if (!pvCalibratedToday && (millis() - darkStartTime > DARK_DURATION_MS)) {
+      calibratePV(); // 5 minutes of pitch black achieved
+    }
+  } else {
+    isDark = false;
+    // Reset the daily flag when the sun comes up (e.g., > 100 lux)
+    if (current_lux > 100) pvCalibratedToday = false; 
+  }
+
+  // Calculate actual amperes using the dynamic NVS zero points (Simulation representation)
+  // Actual: float pv_current = ((analogRead(PV_PIN) - pvZeroPoint) * (3.3 / 4095.0)) / SENSITIVITY;
 
   StaticJsonDocument<PAYLOAD_MAX_SZ> doc;
   doc["pv_voltage"]     = sim_pv_voltage;
-  doc["pv_current"]     = random(0, 50)  / 10.0;
+  doc["pv_current"]     = random(0, 50)  / 10.0; // In reality, uses pvZeroPoint
   doc["batt_voltage"]   = random(110, 144) / 10.0;
-  doc["load_current"]   = random(0, 30)  / 10.0;
+  doc["load_current"]   = random(0, 30)  / 10.0; // In reality, uses loadZeroPoint
   doc["temp"]           = random(250, 400) / 10.0;
-  // Simulated BH1750 irradiance (scaled from PV voltage proxy)
-  doc["irradiance_lux"] = (int)(sim_pv_voltage * 5000) + random(0, 5000);
+  doc["irradiance_lux"] = current_lux;
   doc["timestamp_unix"] = (long)getCurrentTimestamp();
 
   String payload;
