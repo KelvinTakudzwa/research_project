@@ -22,7 +22,7 @@ const Dashboard = () => {
     const fetchData = async () => {
         try {
             // Get historical data for charts
-            const historyRes = await axios.get('http://localhost:5000/api/readings');
+            const historyRes = await axios.get('/api/readings');
             const newHistory = historyRes.data;
             setHistory(newHistory);
             localStorage.setItem('solar_history', JSON.stringify(newHistory));
@@ -34,7 +34,7 @@ const Dashboard = () => {
             }
 
             // Get Alerts
-            const alertsRes = await axios.get('http://localhost:5000/api/alerts');
+            const alertsRes = await axios.get('/api/alerts');
             const newAlerts = alertsRes.data;
             setAlerts(newAlerts);
             localStorage.setItem('solar_alerts', JSON.stringify(newAlerts));
