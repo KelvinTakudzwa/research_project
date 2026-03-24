@@ -12,17 +12,44 @@ app.use(express.json());
 app.use(cors());
 
 // ============================================================
-// DATABASE CONNECTION
+// DATABASE CONNECTION WITH STARTUP RETRY LOOP (Docker fix)
 // ============================================================
-const db = mysql.createPool({
-    host: 'localhost',
-    user: 'root',
-    password: '0786682192@Tk',
-    database: 'solar_monitoring',
+const dbPoolConfig = {
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '0786682192@Tk',
+    database: process.env.DB_NAME || 'solar_monitoring',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
-});
+};
+
+let db;
+
+const connectWithRetry = async (retries = 5, delay = 3000) => {
+    while (retries > 0) {
+        try {
+            db = mysql.createPool(dbPoolConfig);
+            // Test the connection
+            await new Promise((resolve, reject) => {
+                db.query('SELECT 1', (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+            console.log(`[DB] Successfully connected to MySQL at ${dbPoolConfig.host}`);
+            return;
+        } catch (err) {
+            retries -= 1;
+            console.error(`[DB] Connection failed. Retries left: ${retries}. Waiting ${delay/1000}s...`);
+            if (retries === 0) {
+                console.error('[DB] Fatally failed to connect to MySQL. Exiting.');
+                process.exit(1);
+            }
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+};
 
 // ============================================================
 // CORE DATA PROCESSING PIPELINE
@@ -96,7 +123,8 @@ const processSensorData = async (rawArray) => {
 // ============================================================
 const checkAnomaly = async (dataPacket) => {
     try {
-        const response = await fetch('http://127.0.0.1:8000/predict', {
+        const ML_API_URL = process.env.ML_API_URL || 'http://127.0.0.1:8000';
+        const response = await fetch(`${ML_API_URL}/predict`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(dataPacket)
@@ -115,7 +143,7 @@ const checkAnomaly = async (dataPacket) => {
 // ============================================================
 // MQTT SUBSCRIBER — PRIMARY DATA TRANSPORT (Phase 8)
 // ============================================================
-const MQTT_BROKER = 'mqtt://localhost:1883';
+const MQTT_BROKER = process.env.MQTT_BROKER || 'mqtt://localhost:1883';
 const MQTT_TOPIC  = 'solar/data';
 
 const mqttClient = mqtt.connect(MQTT_BROKER, {
@@ -193,10 +221,12 @@ app.get('/api/alerts', (req, res) => {
 });
 
 // ============================================================
-// START HTTP SERVER
+// START HTTP SERVER (After DB starts)
 // ============================================================
-app.listen(PORT, () => {
-    console.log(`[HTTP] Server running on port ${PORT}`);
-    console.log('[HTTP] Fallback /api/data endpoint active for manual testing.');
-    console.log('[MQTT] Waiting for broker connection...');
+connectWithRetry().then(() => {
+    app.listen(PORT, () => {
+        console.log(`[HTTP] Server running on port ${PORT}`);
+        console.log('[HTTP] Fallback /api/data endpoint active for manual testing.');
+        console.log(`[MQTT] Waiting for broker connection at ${MQTT_BROKER}...`);
+    });
 });

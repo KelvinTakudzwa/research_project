@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: solar_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 0786682192@Tk
+      MYSQL_DATABASE: solar_monitoring
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Map the schema SQL to initialize the DB automatically on first run
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - solar_net
+
+  broker:
+    image: eclipse-mosquitto:2.0
+    container_name: solar_broker
+    restart: unless-stopped
+    # Only map external 1883 so ESP32 can connect
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - solar_net
+
+  ml-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.ml
+    container_name: solar_ml_api
+    restart: unless-stopped
+    # Exposing only to the internal docker network -> port 8000
+    volumes:
+      - ./backend/models:/app/models
+    networks:
+      - solar_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: solar_node_api
+    restart: unless-stopped
+    environment:
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=0786682192@Tk
+      - DB_NAME=solar_monitoring
+      - MQTT_BROKER=mqtt://broker
+      - ML_API_URL=http://ml-api:8000
+    depends_on:
+      - db
+      - broker
+      - ml-api
+    networks:
+      - solar_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: solar_dashboard
+    restart: unless-stopped
+    ports:
+      # Map container Nginx port 80 to host port 80
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - solar_net
+
+networks:
+  solar_net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  mosquitto_data:
+  mosquitto_log:
