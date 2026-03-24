@@ -1,17 +1,20 @@
 // ============================================================
 // ESP32 Solar Mini-Grid IoT Node Firmware
-// Phase 8: MQTT QoS 1 Protocol Upgrade
+// Phase 8: DS3231 RTC + MQTT QoS 1
 //
-// MQTT Library: MQTT by Joel Gaehwiler (supports true QoS 1 PUBACK)
-// Install in Arduino IDE: Sketch > Include Library > Manage Libraries
-// Search: "MQTT" by Joel Gaehwiler (github.com/256dpi/arduino-mqtt)
+// Libraries required (install via Arduino Library Manager):
+//   - "MQTT" by Joel Gaehwiler       (QoS 1 PUBACK support)
+//   - "RTClib" by Adafruit            (DS3231 hardware clock)
+//   - "ArduinoJson" by Arduino        (JSON serialization)
 // ============================================================
 
 #include <WiFi.h>
-#include <MQTT.h>          // Joel Gaehwiler's library — supports QoS 1 PUBACK
+#include <MQTT.h>          // Joel Gaehwiler — true QoS 1 publishing
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include "time.h"
+#include <Wire.h>          // I2C bus for DS3231
+#include <RTClib.h>        // Adafruit RTClib — DS3231 driver
 
 // ============================================================
 // NETWORK & BROKER CONFIGURATION
@@ -27,12 +30,19 @@ const char* MQTT_CLIENT_ID   = "ESP32_SolarNode_01";
 const char* MQTT_TOPIC       = "solar/data";
 
 // ============================================================
-// TIME TRACKING (NTP + millis() fallback for offline timestamps)
+// DS3231 RTC — Battery-backed hardware clock (Phase 8, Task 2)
+// Wiring: SDA → GPIO21, SCL → GPIO22, VCC → 3.3V, GND → GND
+// The DS3231 retains the exact time for years using a CR2032 coin battery.
+// This eliminates the millis() timestamp corruption seen after power loss.
 // ============================================================
 const char* NTP_SERVER       = "pool.ntp.org";
 const long  GMT_OFFSET_SEC   = 0;
 const int   DST_OFFSET_SEC   = 0;
 
+RTC_DS3231    rtc;                // DS3231 hardware RTC object
+bool          rtcAvailable = false; // set true if DS3231 found on I2C bus
+
+// millis() fallback (used ONLY if both RTC and NTP fail — last resort)
 unsigned long lastSyncMillis = 0;
 time_t        lastNtpTime    = 0;
 bool          timeSynced     = false;
@@ -56,6 +66,26 @@ MQTTClient   mqttClient(PAYLOAD_MAX_SZ); // Set max packet size to 512 bytes
 void setup() {
   Serial.begin(115200);
 
+  // Initialize I2C for DS3231
+  Wire.begin();
+
+  // Initialize DS3231 RTC
+  if (rtc.begin()) {
+    rtcAvailable = true;
+    Serial.println("[RTC] DS3231 detected on I2C bus.");
+    if (rtc.lostPower()) {
+      // RTC lost power — clock is invalid. Must sync from NTP.
+      Serial.println("[RTC] WARNING: RTC lost power. Timestamp invalid until NTP sync.");
+    } else {
+      DateTime now = rtc.now();
+      Serial.printf("[RTC] Current time: %04d-%02d-%02d %02d:%02d:%02d\n",
+        now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+    }
+  } else {
+    rtcAvailable = false;
+    Serial.println("[RTC] DS3231 NOT found — will fall back to NTP/millis().");
+  }
+
   // Initialize LittleFS for Store & Forward
   if (!LittleFS.begin(true)) {
     Serial.println("[LittleFS] CRITICAL: Mount failed.");
@@ -64,7 +94,7 @@ void setup() {
   Serial.println("[LittleFS] Mounted.");
 
   connectWiFi();
-  syncNTP();
+  syncNTP(); // Also sets the RTC if Wi-Fi is available
   connectMQTT();
 }
 
@@ -88,9 +118,18 @@ void connectWiFi() {
 }
 
 // ============================================================
-// NTP TIME SYNC
+// NTP SYNC — Also sets the DS3231 hardware clock
 // ============================================================
 void syncNTP() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (rtcAvailable && !rtc.lostPower()) {
+      Serial.println("[NTP] Wi-Fi not available. DS3231 providing time.");
+    } else {
+      Serial.println("[NTP] Wi-Fi not available. No reliable time source.");
+    }
+    return;
+  }
+
   configTime(GMT_OFFSET_SEC, DST_OFFSET_SEC, NTP_SERVER);
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
@@ -98,19 +137,39 @@ void syncNTP() {
     lastSyncMillis = millis();
     timeSynced = true;
     Serial.println("[NTP] Time synced successfully.");
+
+    // KEY STEP: Write NTP time into DS3231 hardware registers
+    if (rtcAvailable) {
+      rtc.adjust(DateTime(lastNtpTime));
+      Serial.println("[RTC] DS3231 clock set from NTP. Coin battery will maintain this time.");
+    }
   } else {
-    Serial.println("[NTP] Sync failed — using millis() fallback.");
+    Serial.println("[NTP] NTP sync failed.");
   }
 }
 
+// ============================================================
+// GET CURRENT TIMESTAMP — Priority: DS3231 > NTP/millis() fallback
+// ============================================================
 time_t getCurrentTimestamp() {
-  if (!timeSynced) return 0;
-  // Re-sync every 1 hour while online
-  if (WiFi.status() == WL_CONNECTED && (millis() - lastSyncMillis > 3600000)) {
-    syncNTP();
+  // 1st choice: DS3231 hardware clock (accurate even after power loss)
+  if (rtcAvailable && !rtc.lostPower()) {
+    return (time_t)rtc.now().unixtime();
   }
-  return lastNtpTime + ((millis() - lastSyncMillis) / 1000);
+
+  // 2nd choice: millis() offset from last NTP sync (drifts over time)
+  if (timeSynced) {
+    // Re-sync opportunistically every hour while online
+    if (WiFi.status() == WL_CONNECTED && (millis() - lastSyncMillis > 3600000)) {
+      syncNTP();
+    }
+    return lastNtpTime + ((millis() - lastSyncMillis) / 1000);
+  }
+
+  // Last resort: No reliable time source
+  return 0;
 }
+
 
 // ============================================================
 // MQTT CONNECTION (Gaehwiler library — true QoS 1 support)
