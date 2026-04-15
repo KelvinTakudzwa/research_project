@@ -24,6 +24,7 @@ const Dashboard = () => {
             // Get historical data for charts
             const historyRes = await axios.get('/api/readings');
             const newHistory = historyRes.data;
+            if (!Array.isArray(newHistory)) throw new Error("Expected array for history, got invalid data type.");
             setHistory(newHistory);
             localStorage.setItem('solar_history', JSON.stringify(newHistory));
 
@@ -36,6 +37,7 @@ const Dashboard = () => {
             // Get Alerts
             const alertsRes = await axios.get('/api/alerts');
             const newAlerts = alertsRes.data;
+            if (!Array.isArray(newAlerts)) throw new Error("Expected array for alerts, got invalid data type.");
             setAlerts(newAlerts);
             localStorage.setItem('solar_alerts', JSON.stringify(newAlerts));
 

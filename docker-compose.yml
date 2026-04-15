@@ -68,8 +68,8 @@ services:
     container_name: solar_dashboard
     restart: unless-stopped
     ports:
-      # Map container Nginx port 80 to host port 80
-      - "80:80"
+      # Map container Nginx port 80 to host port 8080 to completely bypass local PWA cache
+      - "8080:80"
     depends_on:
       - backend
     networks:

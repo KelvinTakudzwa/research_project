@@ -24,7 +24,8 @@ df = pd.read_csv(DATA_PATH)
 # We exclude 'timestamp' and 'label' from X
 feature_cols = [
     'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
-    'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
+    'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent',
+    'current_to_lux_ratio'  # <-- Contextual discriminator for F1/F5 detection
 ]
 
 # Check if columns exist
@@ -78,15 +79,16 @@ print("Random Forest model saved.")
 # ==========================================
 # 2. Isolation Forest (Unsupervised - Anomaly Detection)
 # ==========================================
-print("\n--- Training Isolation Forest (Unsupervised) ---")
-# IF is typically trained on "Normal" data to learn what normal looks like,
-# then detects outliers. Or trained on everything if contamination is known.
-# We will train on the full training set but tell it the contamination ratio.
-contamination = y.mean() # Approx ratio of anomalies
-if contamination == 0: contamination = 0.01 # Fallback
+print("\n--- Training Isolation Forest (Unsupervised - Novelty Detection) ---")
+# ACADEMICALLY RIGOROUS: Train strictly on NORMAL data only.
+# The model learns the mathematical shape of healthy solar curves.
+# Any deviation from this shape (F1-F5) is flagged as an outlier.
+# We never expose the model to fault examples during training.
+X_normal = X_train[y_train == 0]
+print(f"Training on {len(X_normal)} clean normal samples (label=0 only).")
 
-if_model = IsolationForest(contamination=contamination, random_state=42, n_jobs=-1)
-if_model.fit(X_train)
+if_model = IsolationForest(contamination='auto', random_state=42, n_jobs=-1)
+if_model.fit(X_normal)
 
 # Test (IF returns -1 for anomaly, 1 for normal)
 if_preds = if_model.predict(X_test)
