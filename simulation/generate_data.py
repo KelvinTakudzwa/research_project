@@ -133,6 +133,13 @@ df['pv_power_watts'] = df['pv_voltage'] * df['pv_current']
 # 2. Net Energy Flux = Solar Current - Load Current
 df['net_energy_flux'] = df['pv_current'] - df['load_current']
 
+# 3a. Contextual Ratio Feature (The Anomaly Discriminator)
+# This is the KEY feature for Isolation Forest:
+# A ratio near ~0.05 at midday (high lux) is physically impossible unless panels are shaded/faulted.
+# At night, both pv_current and irradiance_lux are low, so the ratio stays normal.
+# Formula: (pv_current / (irradiance_lux + 1)) * 1000 — scaled for numerical stability
+df['current_to_lux_ratio'] = (df['pv_current'] / (df['irradiance_lux'] + 1)) * 1000
+
 # 3. Rolling Averages (10-minute moving average of battery voltage)
 df['batt_voltage_ma_10'] = df['batt_voltage'].rolling(window=10, min_periods=1).mean().round(2)
 
@@ -147,6 +154,7 @@ df['soc_percent'] = df['soc_percent'].clip(0, 100).round(2)
 # Round new columns
 df['pv_power_watts'] = df['pv_power_watts'].round(2)
 df['net_energy_flux'] = df['net_energy_flux'].round(2)
+df['current_to_lux_ratio'] = df['current_to_lux_ratio'].round(4)
 
 # Save
 filename = "solar_data_30days.csv"

@@ -50,6 +50,8 @@ class SensorData(BaseModel):
     net_energy_flux: float
     batt_voltage_ma_10: float
     soc_percent: float
+    # Derived by server.js before forwarding — the key contextual discriminator
+    current_to_lux_ratio: float = 0.0
 
 @app.get("/")
 def read_root():
@@ -95,11 +97,16 @@ def predict_anomaly(data: SensorData):
         # Prepare DataFrame matching training shape
         feature_cols = [
             'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
-            'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent'
+            'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent',
+            'current_to_lux_ratio'
         ]
         
         # Create DataFrame from request body
         df = pd.DataFrame([data.model_dump()])
+        
+        # Calculate live if not provided by sender (belt-and-suspenders)
+        if 'current_to_lux_ratio' not in df.columns or df['current_to_lux_ratio'].iloc[0] == 0.0:
+            df['current_to_lux_ratio'] = (df['pv_current'] / (df['irradiance_lux'] + 1)) * 1000
         
         # Select ordered features (just to be safe)
         X = df[feature_cols]

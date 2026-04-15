@@ -65,52 +65,89 @@ const processSensorData = async (rawArray) => {
         soc = Math.min(Math.max(soc, 0), 100);
 
         const power_watts = raw.pv_voltage * raw.pv_current;
-        const batt_ma = raw.batt_voltage;
+        const net_flux    = raw.pv_current - raw.load_current;
+        const lux         = raw.irradiance_lux || 0;
+        // Contextual discriminator feature — must match ML model training
+        const current_to_lux_ratio = (raw.pv_current / (lux + 1)) * 1000;
 
         const enrichedData = {
-            pv_voltage: raw.pv_voltage,
-            pv_current: raw.pv_current,
-            batt_voltage: raw.batt_voltage,
-            load_current: raw.load_current,
-            temperature: raw.temp,
-            irradiance_lux: raw.irradiance_lux || 0,
-            pv_power_watts: power_watts,
-            net_energy_flux: raw.pv_current - raw.load_current,
-            batt_voltage_ma_10: batt_ma,
-            soc_percent: soc
+            pv_voltage:           raw.pv_voltage,
+            pv_current:           raw.pv_current,
+            batt_voltage:         raw.batt_voltage,
+            load_current:         raw.load_current,
+            temperature:          raw.temp || raw.temperature || 0,
+            irradiance_lux:       lux,
+            pv_power_watts:       power_watts,
+            net_energy_flux:      net_flux,
+            batt_voltage_ma_10:   raw.batt_voltage, // Approximation; rolling avg done in Python
+            soc_percent:          soc,
+            current_to_lux_ratio: current_to_lux_ratio
         };
 
-        console.log(`[Pipeline] Processing reading. SoC: ${soc.toFixed(1)}%`);
+        console.log(`[Pipeline] SoC: ${soc.toFixed(1)}% | Lux-Ratio: ${current_to_lux_ratio.toFixed(4)}`);
 
+        // -- Step 1: Get ML prediction BEFORE writing to DB --
         const mlResult = await checkAnomaly(enrichedData);
-        console.log('[Pipeline] ML Prediction:', mlResult);
+        const predLabel    = mlResult.status      || 'Normal';
+        const anomalyScore = mlResult.anomaly_score !== undefined ? mlResult.anomaly_score : null;
 
-        const predLabel = mlResult.status || 'Normal';
+        const timeExpr = (raw.timestamp_unix && raw.timestamp_unix > 0)
+            ? `FROM_UNIXTIME(${raw.timestamp_unix})`
+            : 'NOW()';
 
-        let timeVal = 'NOW()';
-        if (raw.timestamp_unix && raw.timestamp_unix > 0) {
-            timeVal = `FROM_UNIXTIME(${raw.timestamp_unix})`;
-        }
+        const recordSource = (raw.record_source === 'store_forward') ? 'store_forward' : 'realtime';
 
-        const sql = `
-            INSERT INTO solar_readings 
-            (timestamp, pv_voltage, pv_current, batt_voltage, load_current, temperature, irradiance_lux, pv_power_watts, net_energy_flux, soc_percent, pred_label) 
-            VALUES (${timeVal}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        // -- Step 2: INSERT into telemetry_data (raw sensor record) --
+        const telemetrySql = `
+            INSERT INTO telemetry_data
+            (timestamp_unix, pv_voltage, pv_current, batt_voltage, load_current,
+             temperature, irradiance_lux, pv_power_watts, net_energy_flux, soc_percent, record_source)
+            VALUES (${timeExpr}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
-        const values = [
-            raw.pv_voltage, raw.pv_current, raw.batt_voltage, raw.load_current, raw.temp,
-            raw.irradiance_lux || 0, power_watts, enrichedData.net_energy_flux, soc, predLabel
+        const telemetryValues = [
+            raw.pv_voltage, raw.pv_current, raw.batt_voltage, raw.load_current,
+            enrichedData.temperature, lux, power_watts, net_flux, soc, recordSource
         ];
 
-        db.query(sql, values, (err) => {
+        db.query(telemetrySql, telemetryValues, (err, telemetryResult) => {
             if (err) {
-                console.error('[DB] Insert Error:', err);
-            } else {
-                if (predLabel !== 'Normal') {
-                    const alertSql = `INSERT INTO system_alerts (timestamp, alert_type, details, severity) VALUES (${timeVal}, ?, ?, ?)`;
-                    db.query(alertSql, [predLabel, `SoC: ${soc.toFixed(1)}%, V: ${raw.batt_voltage}, Irr: ${raw.irradiance_lux || 0} Lux`, 'Warning']);
-                }
+                console.error('[DB] telemetry_data insert error:', err);
+                return;
             }
+
+            const telemetryId = telemetryResult.insertId;
+
+            // -- Step 3: INSERT into inference_results (ML analysis) --
+            const inferenceSql = `
+                INSERT INTO inference_results (telemetry_id, soh_percent, anomaly_score, pred_label)
+                VALUES (?, ?, ?, ?)
+            `;
+            db.query(inferenceSql, [telemetryId, soc, anomalyScore, predLabel], (err2, inferenceResult) => {
+                if (err2) {
+                    console.error('[DB] inference_results insert error:', err2);
+                    return;
+                }
+
+                // -- Step 4: INSERT alert if fault detected (1:N from inference_results) --
+                if (predLabel !== 'Normal' && predLabel !== 'Error') {
+                    const inferenceId  = inferenceResult.insertId;
+                    const faultMapping = {
+                        'Unknown_Anomaly': 'F1 Partial Shading / Unknown',
+                        'Known_Fault':     'F2-F5 Known Fault Pattern'
+                    };
+                    const faultCategory = faultMapping[predLabel] || predLabel;
+                    const severity      = predLabel === 'Known_Fault' ? 'Critical' : 'Warning';
+
+                    const alertSql = `
+                        INSERT INTO system_alerts (inference_id, alert_timestamp, fault_category, severity)
+                        VALUES (?, ${timeExpr}, ?, ?)
+                    `;
+                    db.query(alertSql, [inferenceId, faultCategory, severity], (err3) => {
+                        if (err3) console.error('[DB] system_alerts insert error:', err3);
+                        else console.log(`[Alert] ${severity} alert logged — ${faultCategory}`);
+                    });
+                }
+            });
         });
 
         processedCount++;
@@ -204,17 +241,45 @@ app.post('/api/data', async (req, res) => {
     res.json({ status: 'Saved', transport: 'HTTP', processed_count: count });
 });
 
-// GET /api/readings — Dashboard data (last 100)
+// GET /api/readings — Dashboard data (last 100), joined with ML results
 app.get('/api/readings', (req, res) => {
-    db.query('SELECT * FROM solar_readings ORDER BY timestamp DESC LIMIT 100', (err, results) => {
+    const sql = `
+        SELECT
+            t.telemetry_id  AS id,
+            t.timestamp_unix AS timestamp,
+            t.pv_voltage, t.pv_current, t.batt_voltage,
+            t.load_current, t.temperature, t.irradiance_lux,
+            t.pv_power_watts, t.net_energy_flux, t.soc_percent, t.record_source,
+            i.pred_label, i.anomaly_score, i.soh_percent
+        FROM telemetry_data t
+        LEFT JOIN inference_results i ON t.telemetry_id = i.telemetry_id
+        ORDER BY t.timestamp_unix DESC
+        LIMIT 100
+    `;
+    db.query(sql, (err, results) => {
         if (err) return res.status(500).send(err);
         res.json(results.reverse());
     });
 });
 
-// GET /api/alerts — Dashboard alerts
+// GET /api/alerts — Dashboard alerts (last 10)
 app.get('/api/alerts', (req, res) => {
-    db.query('SELECT * FROM system_alerts ORDER BY timestamp DESC LIMIT 10', (err, results) => {
+    const sql = `
+        SELECT
+            a.alert_id   AS id,
+            a.alert_timestamp AS timestamp,
+            a.fault_category  AS alert_type,
+            a.severity,
+            i.pred_label,
+            t.soc_percent,
+            t.batt_voltage
+        FROM system_alerts a
+        JOIN inference_results i ON a.inference_id = i.inference_id
+        JOIN telemetry_data    t ON i.telemetry_id  = t.telemetry_id
+        ORDER BY a.alert_timestamp DESC
+        LIMIT 10
+    `;
+    db.query(sql, (err, results) => {
         if (err) return res.status(500).send(err);
         res.json(results);
     });
