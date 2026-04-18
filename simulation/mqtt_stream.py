@@ -3,9 +3,16 @@ import json
 import time
 import random
 
-# Connect to the Mosquitto broker inside Docker (localhost:1883)
-# We use Callback API v1 for legacy compatibility with older paho-mqtt versions.
-client = mqtt.Client(client_id="PythonSimulator", protocol=mqtt.MQTTv311)
+# Use CallbackAPIVersion for paho-mqtt v2 compatibility
+try:
+    client = mqtt.Client(
+        client_id="PythonSimulator",
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        protocol=mqtt.MQTTv311
+    )
+except AttributeError:
+    # Fallback for older paho versions
+    client = mqtt.Client(client_id="PythonSimulator", protocol=mqtt.MQTTv311)
 try:
     client.connect("localhost", 1883, 60)
 except Exception as e:
