@@ -285,6 +285,30 @@ app.get('/api/alerts', (req, res) => {
     });
 });
 
+// POST /api/trigger_retraining — Proxy to ML container (internal Docker DNS)
+app.post('/api/trigger_retraining', async (req, res) => {
+    try {
+        const ML_API_URL = process.env.ML_API_URL || 'http://127.0.0.1:8000';
+        const response = await fetch(`${ML_API_URL}/trigger_retraining`, { method: 'POST' });
+        const data = await response.json();
+        res.json(data);
+    } catch (err) {
+        console.error('[ML] Retraining proxy error:', err.message);
+        res.status(503).json({ status: 'Error', message: 'ML API unreachable' });
+    }
+});
+
+// GET /api/calibration_log — Last 5 retraining cycles for UI display
+app.get('/api/calibration_log', (req, res) => {
+    db.query(
+        'SELECT * FROM calibration_log ORDER BY retrain_timestamp DESC LIMIT 5',
+        (err, results) => {
+            if (err) return res.status(500).send(err);
+            res.json(results);
+        }
+    );
+});
+
 // ============================================================
 // START HTTP SERVER (After DB starts)
 // ============================================================
