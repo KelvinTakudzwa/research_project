@@ -12,6 +12,9 @@ services:
       - mysql_data:/var/lib/mysql
       # Map the schema SQL to initialize the DB automatically on first run
       - ./database/schema.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      # Expose on 3307 (not 3306) to avoid conflict with local MySQL80 Windows service
+      - "3307:3306"
     networks:
       - solar_net
 
