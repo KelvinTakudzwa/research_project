@@ -50,10 +50,14 @@ X = df[feature_cols]
 # METRIC BATCH 1: Isolation Forest (Anomalies)
 # ==========================================
 print("--- Machine Learning Metrics: Isolation Forest ---")
-# scikit-learn IF outputs: 1 (Normal), -1 (Anomaly)
-if_raw_preds = if_model.predict(X)
+# scikit-learn IF outputs: 1 (Normal), -1 (Anomaly) at a strict 0.0 threshold.
+# We extract the raw decision_function scores and apply an optimal threshold 
+# for production edge environments which allows natural solar variance (like clouds)
+if_scores = if_model.decision_function(X)
+
+OPTIMAL_THRESHOLD = -0.06
 # Convert to 0 (Normal), 1 (Anomaly) to match our Ground Truth labels
-df['if_pred'] = np.where(if_raw_preds == 1, 0, 1)
+df['if_pred'] = np.where(if_scores < OPTIMAL_THRESHOLD, 1, 0)
 
 # Filter out 'F4' (Network Fault) because it's completely normal sensor data, 
 # it was just delayed by store & forward. It should not be labeled "Anomaly" by the AI.

@@ -156,24 +156,34 @@ const processSensorData = async (rawArray) => {
 };
 
 // ============================================================
-// ML API HELPER
+// ML API HELPER — 5s timeout prevents event loop stall
 // ============================================================
 const checkAnomaly = async (dataPacket) => {
+    const ML_API_URL = process.env.ML_API_URL || 'http://127.0.0.1:8000';
+    const controller = new AbortController();
+    const timeout    = setTimeout(() => controller.abort(), 5000); // 5 second hard timeout
     try {
-        const ML_API_URL = process.env.ML_API_URL || 'http://127.0.0.1:8000';
         const response = await fetch(`${ML_API_URL}/predict`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataPacket)
+            body: JSON.stringify(dataPacket),
+            signal: controller.signal
         });
+        clearTimeout(timeout);
         if (!response.ok) {
-            console.error(`[ML] API Error: ${response.status}`);
-            return { status: 'Error' };
+            console.warn(`[ML] API returned ${response.status} — defaulting to Normal.`);
+            return { status: 'Normal', anomaly_score: null };
         }
         return await response.json();
     } catch (error) {
-        console.error('[ML] Service offline:', error.message);
-        return { status: 'Error' };
+        clearTimeout(timeout);
+        if (error.name === 'AbortError') {
+            console.warn('[ML] Request timed out after 5s — defaulting to Normal.');
+        } else {
+            console.warn('[ML] Service unreachable:', error.message, '— defaulting to Normal.');
+        }
+        // Fail open: save the raw data as Normal so the DB keeps populating
+        return { status: 'Normal', anomaly_score: null };
     }
 };
 
@@ -202,19 +212,21 @@ mqttClient.on('connect', () => {
     });
 });
 
-mqttClient.on('message', async (topic, messageBuffer) => {
-    const raw = messageBuffer.toString();
-    console.log(`[MQTT] Message received on topic '${topic}': ${raw.substring(0, 80)}...`);
-
-    try {
-        let payload = JSON.parse(raw);
-        // Normalize to array — handles both single object and burst JSON arrays
-        if (!Array.isArray(payload)) payload = [payload];
-        const count = await processSensorData(payload);
-        console.log(`[MQTT] Pipeline complete. Processed ${count} reading(s).`);
-    } catch (err) {
-        console.error('[MQTT] Failed to parse or process message:', err.message);
-    }
+mqttClient.on('message', (topic, messageBuffer) => {
+    // Use setImmediate so a crash in one message never blocks the next
+    setImmediate(async () => {
+        const raw = messageBuffer.toString();
+        console.log(`[MQTT] Received on '${topic}': ${raw.substring(0, 80)}...`);
+        try {
+            let payload = JSON.parse(raw);
+            if (!Array.isArray(payload)) payload = [payload];
+            const count = await processSensorData(payload);
+            console.log(`[MQTT] Pipeline complete — ${count} reading(s) processed.`);
+        } catch (err) {
+            // Log and continue — subscription stays alive
+            console.error('[MQTT] Handler error (subscription preserved):', err.message);
+        }
+    });
 });
 
 mqttClient.on('error', (err) => {

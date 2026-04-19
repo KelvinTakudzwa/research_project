@@ -52,17 +52,41 @@ const Dashboard = () => {
         setRetrainStatus('loading');
         setRetrainMsg('Dispatching retraining job...');
         try {
-            const res = await axios.post('/api/trigger_retraining');
-            setRetrainStatus('success');
-            setRetrainMsg(res.data.message || 'Retraining started in background.');
-            // Refresh calibration log after a short delay
-            setTimeout(fetchData, 3000);
+            const currentLogLength = calibrationLog.length;
+            await axios.post('/api/trigger_retraining');
+            setRetrainMsg('Retraining in progress (background)...');
+            
+            let attempts = 0;
+            const pollLogs = async () => {
+                try {
+                    const calRes = await axios.get('/api/calibration_log');
+                    if (calRes.data.length > currentLogLength) {
+                        setCalibrationLog(calRes.data);
+                        setRetrainStatus('success');
+                        setRetrainMsg('Retraining completed successfully!');
+                        setTimeout(() => setRetrainStatus('idle'), 5000);
+                        return;
+                    }
+                } catch (e) {}
+                
+                attempts++;
+                if (attempts < 20) { // Max 60 seconds
+                    setTimeout(pollLogs, 3000);
+                } else {
+                    setRetrainStatus('error');
+                    setRetrainMsg('Timed out waiting for completion.');
+                    setTimeout(() => setRetrainStatus('idle'), 5000);
+                }
+            };
+            
+            // Start polling after 3 seconds
+            setTimeout(pollLogs, 3000);
+            
         } catch (err) {
             setRetrainStatus('error');
             setRetrainMsg(err.response?.data?.message || 'ML API unreachable.');
+            setTimeout(() => setRetrainStatus('idle'), 6000);
         }
-        // Reset to idle after 6 seconds
-        setTimeout(() => setRetrainStatus('idle'), 6000);
     };
 
     useEffect(() => {
