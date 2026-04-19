@@ -1,7 +1,7 @@
 Metric,Value,Target Promise
-IF Precision,0.3500,> 0.90
-IF Recall,1.0000,N/A
-IF F1-Score,0.5185,> 0.90
-RF Accuracy,0.7083,Secondary
+IF Precision,0.8493,> 0.90
+IF Recall,0.7381,N/A
+IF F1-Score,0.7898,> 0.90
+RF Accuracy,0.8576,Secondary
 PDR (%),100.0,100%
-Latency (ms),19.74,< 30000ms
+Latency (ms),24.32,< 30000ms

@@ -116,20 +116,25 @@ def predict_anomaly(data: SensorData):
         
         # 2. Isolation Forest Prediction (Outlier Check)
         # IF returns 1 for Inlier (Normal), -1 for Outlier
-        if_pred = if_model.predict(X)[0] 
-        is_outlier = True if if_pred == -1 else False
+        if_pred  = if_model.predict(X)[0]           # 1=Normal, -1=Outlier
+        if_score = float(if_model.decision_function(X)[0])  # Raw score: >0 = normal, <0 = anomaly
+        is_outlier = (if_pred == -1)
 
-    # Logic: If RF says Anomaly OR IF says Outlier -> Flag it
-    final_status = "Normal"
-    if rf_pred == 1:
-        final_status = "Known_Fault"
-    elif is_outlier:
-        final_status = "Unknown_Anomaly"
+    # Decision Logic:
+    # Primary gate = Isolation Forest (unsupervised, version-stable)
+    # RF only upgrades severity when BOTH models agree on an anomaly
+    if not is_outlier:
+        final_status = "Normal"            # IF says healthy -> trust it
+    elif rf_pred == 1:
+        final_status = "Known_Fault"       # Both agree -> high-confidence fault
+    else:
+        final_status = "Unknown_Anomaly"   # Only IF flags it -> contextual anomaly
 
     return {
-        "status": final_status,
-        "rf_pred": int(rf_pred),
-        "is_outlier": bool(is_outlier)
+        "status":        final_status,
+        "rf_pred":       int(rf_pred),
+        "is_outlier":    bool(is_outlier),
+        "anomaly_score": round(if_score, 6)
     }
 
 if __name__ == "__main__":

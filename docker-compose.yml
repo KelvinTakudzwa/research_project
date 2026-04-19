@@ -8,6 +8,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: 0786682192@Tk
       MYSQL_DATABASE: solar_monitoring
+      TZ: Africa/Harare
     volumes:
       - mysql_data:/var/lib/mysql
       # Map the schema SQL to initialize the DB automatically on first run
@@ -38,6 +39,12 @@ services:
       dockerfile: Dockerfile.ml
     container_name: solar_ml_api
     restart: unless-stopped
+    environment:
+      - DB_HOST=db
+      - DB_USER=root
+      - DB_PASSWORD=0786682192@Tk
+      - DB_NAME=solar_monitoring
+      - TZ=Africa/Harare
     # Exposing only to the internal docker network -> port 8000
     volumes:
       - ./backend/models:/app/models
@@ -57,6 +64,7 @@ services:
       - DB_NAME=solar_monitoring
       - MQTT_BROKER=mqtt://broker
       - ML_API_URL=http://ml-api:8000
+      - TZ=Africa/Harare
     depends_on:
       - db
       - broker
