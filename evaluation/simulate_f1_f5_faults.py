@@ -43,7 +43,8 @@ def generate_block(fault_id, start_time, duration_mins=48):
         pv_i = float(row['pv_current'])
         batt_v = float(row['batt_voltage'])
         load_i = float(row['load_current'])
-        temp = float(row['temperature'])
+        temp_ambient = float(row['temp_ambient'])
+        temp_probe   = float(row['temp_probe'])
         lux = float(row['irradiance_lux'])
         
         # Default label is 0 (Normal)
@@ -60,7 +61,7 @@ def generate_block(fault_id, start_time, duration_mins=48):
         elif fault_id == "F2" and in_fault_window:
             # F2 Inverter Overload: Load Current spikes
             load_i = 10.0 + random.uniform(-0.5, 0.5)
-            temp = 50.0 + random.uniform(-1, 1)
+            temp_probe = 50.0 + random.uniform(-1, 1)
             batt_v -= 0.5 
             label = 1
             
@@ -99,7 +100,9 @@ def generate_block(fault_id, start_time, duration_mins=48):
             "pv_current": round(pv_i, 2),
             "batt_voltage": round(batt_v, 2),
             "load_current": round(load_i, 2),
-            "temperature": round(temp, 2),
+            "temp_ambient": round(temp_ambient, 2),
+            "temp_probe": round(temp_probe, 2),
+            "temp_delta": round(temp_probe - temp_ambient, 2),
             "irradiance_lux": round(lux, 2),
             "pv_power_watts": round(power_watts, 2),
             "net_energy_flux": round(net_energy, 2),

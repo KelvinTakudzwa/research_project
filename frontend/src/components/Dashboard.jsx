@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { AlertTriangle, Battery, Sun, Activity, Zap, BrainCircuit, RefreshCw, CheckCircle, XCircle } from 'lucide-react';
+import { AlertTriangle, Battery, Sun, Activity, Zap, BrainCircuit, RefreshCw, CheckCircle, XCircle, Thermometer, ThermometerSun, Flame } from 'lucide-react';
 import RealTimeChart from './RealTimeChart';
 import StatusCard from './StatusCard';
 
@@ -119,7 +119,7 @@ const Dashboard = () => {
     };
 
     return (
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             {/* KPI Cards */}
             <StatusCard
                 title="Irradiance"
@@ -146,6 +146,29 @@ const Dashboard = () => {
                 icon={<Activity size={24} />}
                 color={latest.pred_label === 'Normal' ? "text-emerald-400" : "text-red-400"}
             />
+            
+            {/* Dual Sensor Fusion Row */}
+            <StatusCard
+                title="Ambient Temp"
+                value={latest.temp_ambient !== undefined ? `${latest.temp_ambient?.toFixed(1)}°C` : 'N/A'}
+                subValue="DS3231 Sensor"
+                icon={<ThermometerSun size={24} />}
+                color="text-blue-300"
+            />
+            <StatusCard
+                title="Battery Probe"
+                value={latest.temp_probe !== undefined ? `${latest.temp_probe?.toFixed(1)}°C` : 'N/A'}
+                subValue="DS18B20 Surface"
+                icon={<Thermometer size={24} />}
+                color="text-orange-300"
+            />
+            <StatusCard
+                title="Thermal Stress"
+                value={latest.temp_delta !== undefined ? `${latest.temp_delta?.toFixed(1)}°C` : 'N/A'}
+                subValue="Sensor Fusion Δ"
+                icon={<Flame size={24} />}
+                color={latest.temp_delta !== undefined && Math.abs(latest.temp_delta) >= 10.0 ? "text-red-500 font-bold" : "text-rose-400"}
+            />
             <StatusCard
                 title="Active Alerts"
                 value={alerts.length}
@@ -154,7 +177,7 @@ const Dashboard = () => {
             />
 
             {/* Main Chart Section */}
-            <div className="md:col-span-3 glass-panel p-6">
+            <div className="md:col-span-2 lg:col-span-3 glass-panel p-6">
                 <h2 className="text-lg font-bold mb-4 text-indigo-300 uppercase tracking-widest text-xs">Real-Time Performance</h2>
                 <div className="h-[26rem] w-full">
                     <RealTimeChart data={history} />
@@ -162,7 +185,7 @@ const Dashboard = () => {
             </div>
 
             {/* Alerts Feed */}
-            <div className="glass-panel p-6 h-[500px] overflow-hidden flex flex-col">
+            <div className="md:col-span-2 lg:col-span-1 glass-panel p-6 h-[500px] overflow-hidden flex flex-col">
                 <h2 className="text-lg font-bold mb-4 text-orange-300 uppercase tracking-widest text-xs">Recent Alerts</h2>
                 <div className="space-y-3 overflow-y-auto pr-2 custom-scrollbar flex-1">
                     {alerts.map((alert) => (
@@ -177,7 +200,7 @@ const Dashboard = () => {
             </div>
 
             {/* ── ML CONTROL PANEL ── */}
-            <div className="md:col-span-5 glass-panel p-6">
+            <div className="lg:col-span-4 glass-panel p-6">
                 <div className="flex items-center justify-between mb-4">
                     <h2 className="text-indigo-300 uppercase tracking-widest text-xs font-bold flex items-center gap-2">
                         <BrainCircuit size={15} /> ML Retraining Control
