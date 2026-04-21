@@ -9,8 +9,8 @@ from sklearn.metrics import classification_report, confusion_matrix
 import os
 
 # Configuration
-DATA_PATH = "solar_data_30days.csv"
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend", "models")
+DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ml_engine", "solar_data_30days.csv")
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ml_engine", "models")
 IMG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "images")
 
 # Ensure directories exist
@@ -23,9 +23,10 @@ df = pd.read_csv(DATA_PATH)
 # Features to use for training
 # We exclude 'timestamp' and 'label' from X
 feature_cols = [
-    'pv_voltage', 'pv_current', 'batt_voltage', 'load_current', 'temperature',
-    'irradiance_lux', 'pv_power_watts', 'net_energy_flux', 'batt_voltage_ma_10', 'soc_percent',
-    'current_to_lux_ratio'  # <-- Contextual discriminator for F1/F5 detection
+    'pv_voltage', 'pv_current', 'pv_power_watts', 'batt_voltage', 
+    'batt_voltage_ma_10', 'soc_percent', 'load_current', 'net_energy_flux',
+    'irradiance_lux', 'current_to_lux_ratio', 
+    'temp_ambient', 'temp_probe', 'temp_delta'
 ]
 
 # Check if columns exist
@@ -87,7 +88,7 @@ print("\n--- Training Isolation Forest (Unsupervised - Novelty Detection) ---")
 X_normal = X_train[y_train == 0]
 print(f"Training on {len(X_normal)} clean normal samples (label=0 only).")
 
-if_model = IsolationForest(contamination='auto', random_state=42, n_jobs=-1)
+if_model = IsolationForest(contamination=0.015, random_state=42, n_jobs=-1)
 if_model.fit(X_normal)
 
 # Test (IF returns -1 for anomaly, 1 for normal)

@@ -1,7 +1,22 @@
 import pandas as pd
 import numpy as np
 import random
+import math
+import argparse
+import os
 from datetime import datetime, timedelta
+
+# ==========================================
+# CLI Arguments (Phase 1)
+# ==========================================
+parser = argparse.ArgumentParser(description="Solar mini-grid data generator")
+parser.add_argument(
+    '--month', type=int,
+    default=datetime.now().month,
+    help='Target month 1-12 for seasonal calibration. Defaults to current calendar month.'
+)
+args = parser.parse_args()
+TARGET_MONTH = args.month
 
 # Configuration
 DAYS = 30
@@ -11,18 +26,99 @@ START_TIME = datetime.now() - timedelta(days=DAYS)
 
 print(f"Generating {DAYS} days of data ({TOTAL_STEPS} rows)...")
 
+# ==========================================
+# Seasonal Parameter Engine
+# ==========================================
+def _season_label(month: int) -> str:
+    labels = {
+        12: "Summer/Wet",  1: "Summer/Wet",  2: "Summer/Wet",
+         3: "Late Summer",
+         4: "Autumn/Dry",  5: "Autumn/Dry",
+         6: "Winter/Dry",  7: "Winter/Dry",  8: "Winter/Dry",
+         9: "Spring/Dry",  10: "Spring/Peak", 11: "Early Summer"
+    }
+    return labels.get(month, "Unknown")
+
+def get_seasonal_params(month: int) -> dict:
+    """
+    Derives seasonal simulation parameters via cosine interpolation.
+    Zimbabwe: Southern Hemisphere subtropical highland (~17°S).
+    """
+    S = 0.5 * (1 + math.cos(2 * math.pi * (month - 1) / 12))
+
+    return {
+        'irr_peak':      850  + S * (1100 - 850),    
+        'temp_amb_low':  7    + S * (21   - 7),       
+        'temp_amb_high': 23   + S * (38   - 23),      
+        'cloud_prob':    0.05 + S * (0.45 - 0.05),    
+        'day_length_h':  10.5 + S * (13.5 - 10.5),   
+        'month':         month,
+        'season_label':  _season_label(month),
+    }
+
+params = get_seasonal_params(TARGET_MONTH)
+print(f"Seasonal profile: {params['season_label']} (month {TARGET_MONTH})")
+print(f"  Peak GHI: {params['irr_peak']:.0f} W/m² | "
+      f"Temp: {params['temp_amb_low']:.1f}–{params['temp_amb_high']:.1f}°C | "
+      f"Cloud prob: {params['cloud_prob']*100:.0f}%")
+
+def precompute_cloud_blocks(total_steps: int, params: dict) -> set:
+    cloud_steps = set()
+    step = 0
+    while step < total_steps:
+        if random.random() < params['cloud_prob'] / 60:
+            duration = random.randint(15, 45)
+            for s in range(step, min(step + duration, total_steps)):
+                cloud_steps.add(s)
+            step += duration
+        else:
+            step += 1
+    return cloud_steps
+
+cloud_steps = precompute_cloud_blocks(TOTAL_STEPS, params)
+cloud_depths = {s: random.uniform(0.3, 0.75) for s in cloud_steps}
+
+# ==========================================
+# Dual Temperature Model (Sensor Fusion)
+# ==========================================
+def compute_temperatures(hour: float, net_current: float, params: dict, is_fault_f3: bool = False) -> tuple:
+    T_low  = params['temp_amb_low']
+    T_high = params['temp_amb_high']
+    
+    diurnal_frac = math.sin(math.pi * max(0, (hour - 5)) / 18)
+    diurnal_frac = max(0.0, min(1.0, diurnal_frac))
+    
+    temp_ambient = T_low + diurnal_frac * (T_high - T_low)
+    temp_ambient += np.random.normal(0, 0.3) 
+
+    R_internal = 0.35 if is_fault_f3 else 0.08
+    i2r_rise   = (net_current ** 2) * R_internal
+    i2r_rise   = max(0.0, i2r_rise)
+    
+    temp_probe = temp_ambient + i2r_rise
+    temp_probe += np.random.normal(0, 0.15) 
+
+    if abs(net_current) > 0.1:
+        temp_probe = max(temp_probe, temp_ambient)
+    else:
+        temp_probe = temp_ambient 
+    
+    return round(temp_ambient, 2), round(temp_probe, 2)
+
+
 # Lists to store data
 timestamps = []
 pv_voltage = []
 pv_current = []
 batt_voltage = []
 load_current = []
-temperature = []
-irradiance_lux = [] # NEW SENSOR
-labels = [] # 0 = Normal, 1 = Anomaly
+temp_ambient_log = []   
+temp_probe_log   = []   
+irradiance_lux = [] 
+labels = [] 
 
 # Simulation State
-current_batt_voltage = 12.6 # Start full
+current_batt_voltage = 12.6 
 battery_capacity_ah = 100
 dt_hours = INTERVAL_MINUTES / 60.0
 
@@ -32,49 +128,41 @@ for step in range(TOTAL_STEPS):
     
     hour = current_time.hour + current_time.minute/60.0
     
-    # 1. Simulate Solar Irradiance (Parabolic curve from 6am to 6pm)
-    irradiance = 0
-    if 6 <= hour <= 18:
-        # Peak at noon (12), width approx 6 hours either side
-        irradiance = max(0, 1000 * np.sin((hour - 6) * np.pi / 12)) 
+    # 1. Irradiance (Seasonal sine arch with duration clouds)
+    sunrise_h = 6.0 - (params['day_length_h'] - 12) / 2
+    sunset_h  = sunrise_h + params['day_length_h']
+
+    if sunrise_h <= hour <= sunset_h:
+        solar_frac = (hour - sunrise_h) / (sunset_h - sunrise_h)
+        irradiance = params['irr_peak'] * math.sin(math.pi * solar_frac)
+        irradiance = max(0, irradiance)
         
-        # Add random cloud cover noise
-        if random.random() < 0.1: # 10% chance of clouds
-            irradiance *= random.uniform(0.2, 0.8)
-            
-    # Convert W/m^2 proxy to Lux proxy (roughly x116 for sunlight)
-    lux_val = irradiance * 116.0 + np.random.normal(0, 50)
+        if step in cloud_steps:
+            irradiance *= (1 - cloud_depths[step])
+    else:
+        irradiance = 0.0
+
+    irradiance += np.random.normal(0, params['irr_peak'] * 0.005)
+    irradiance = max(0, irradiance)
+
+    lux_val = irradiance * 116.0 
     irradiance_lux.append(round(max(0, lux_val), 1))
     
-    # 2. PV Output (Voltage is roughly constant when sun is up, Current ~ Irradiance)
+    # 2. PV Output
     if irradiance > 10:
-        p_volts = np.random.normal(18.0, 0.5) # Approx 18V Vmp panel
-        p_amps = (irradiance / 1000.0) * 5.0 # Max 5A panel
-        p_amps += np.random.normal(0, 0.1) # Noise
+        p_volts = np.random.normal(18.0, 0.5) 
+        p_amps = (irradiance / 1000.0) * 5.0 
+        p_amps += np.random.normal(0, 0.1) 
     else:
-        p_volts = np.random.normal(0.5, 0.1) # Noise at night
+        p_volts = np.random.normal(0.5, 0.1) 
         p_amps = 0.0
 
-    # Ensure non-negative
     p_amps = max(0, p_amps)
     p_volts = max(0, p_volts)
     
-    # 6. Fault Injection (Anomaly Label)
-    is_anomaly = 0
-    
-    # Scenario A: Shading/Dust (High Irradiance, but Low PV Current)
-    # 5% chance between 11am and 1pm
-    if 11 <= hour <= 13 and lux_val > 80000 and random.random() < 0.05:
-        p_amps *= 0.20 # Current drops by 80% due to simulated thick dust/shade
-        is_anomaly = 1 
-        
-    pv_voltage.append(round(p_volts, 2))
-    pv_current.append(round(p_amps, 2))
-    
-    # 3. Load Profile (Higher in evening)
-    # Base load + evening peak
-    base_load = 0.5 # 0.5A constant (fridge etc)
-    if 18 <= hour <= 22: # Evening lights/TV
+    # 3. Load Profile
+    base_load = 0.5 
+    if 18 <= hour <= 22:
         user_load = random.uniform(1.0, 3.0) 
     else:
         user_load = random.uniform(0.0, 0.5)
@@ -82,83 +170,96 @@ for step in range(TOTAL_STEPS):
     l_amps = base_load + user_load
     load_current.append(round(l_amps, 2))
     
-    # 4. Battery Logic (Coulomb Counting)
+    # 4. Battery Logic
     net_current = p_amps - l_amps
     delta_ah = net_current * dt_hours
     
-    # "Resting" change
     if net_current > 0:
-        current_batt_voltage += (delta_ah * 0.05) # Charging rises fast
+        current_batt_voltage += (delta_ah * 0.05) 
     else:
-        current_batt_voltage += (delta_ah * 0.1) # Discharging drops
+        current_batt_voltage += (delta_ah * 0.1) 
         
-    # Natural bounce back or sag
     target_v = 12.7 if net_current == 0 else (14.0 if net_current > 0 else 11.5)
-    current_batt_voltage = current_batt_voltage * 0.99 + target_v * 0.01 # Drift to steady state
+    current_batt_voltage = current_batt_voltage * 0.99 + target_v * 0.01 
     
-    # Add noise & Limits
     current_batt_voltage += np.random.normal(0, 0.02)
     current_batt_voltage = max(10.5, min(14.8, current_batt_voltage))
     batt_voltage.append(round(current_batt_voltage, 2))
     
-    # Scenario B: Battery degradation (Voltage drops too fast under load)
+    # 5. Fault Injection (Anomaly Label)
+    is_anomaly = 0
+    
+    # Scenario A: Shading/Dust
+    if 11 <= hour <= 13 and irradiance > 600 and random.random() < 0.05:
+        p_amps *= 0.20
+        is_anomaly = 1 
+        
+    # Scenario B: Battery degradation by voltage drop
     if current_batt_voltage < 11.0:
         is_anomaly = 1
+
+    # Scenario C: Battery thermal degradation (elevated I²R heating)
+    is_fault_f3 = False
+    if irradiance > 200 and random.random() < 0.02:
+        is_fault_f3 = True
+        is_anomaly = 1
         
-    # 5. Temperature (Ambient follows sun, Battery heats on high current)
-    ambient = 25 - 5 * np.cos((hour - 4) * np.pi / 12) # Coldest at 4am
-    batt_heat = abs(net_current) * 0.5 # I^2R heating proxy
-    temp_val = ambient + batt_heat + np.random.normal(0, 0.5)
-    temperature.append(round(temp_val, 2))
-    
+    # Finalize arrays
+    pv_voltage.append(round(p_volts, 2))
+    pv_current.append(round(p_amps, 2))
     labels.append(is_anomaly)
 
-# DataFrame
+    # 6. Temperatures
+    t_amb, t_probe = compute_temperatures(hour, net_current, params, is_fault_f3=is_fault_f3)
+    temp_ambient_log.append(t_amb)
+    temp_probe_log.append(t_probe)
+
+# DataFrame Compilation
 df = pd.DataFrame({
-    'timestamp': timestamps,
-    'pv_voltage': pv_voltage,
-    'pv_current': pv_current,
-    'batt_voltage': batt_voltage,
-    'load_current': load_current,
-    'temperature': temperature,
-    'irradiance_lux': irradiance_lux,
-    'label': labels
+    'timestamp':       timestamps,
+    'pv_voltage':      pv_voltage,
+    'pv_current':      pv_current,
+    'batt_voltage':    batt_voltage,
+    'load_current':    load_current,
+    'temp_ambient':    temp_ambient_log,
+    'temp_probe':      temp_probe_log,
+    'irradiance_lux':  irradiance_lux,
+    'label':           labels
 })
 
 # Feature Engineering
 print("Adding derived features...")
-# 1. Power (W) = V * I (Using PV input as primary power source)
 df['pv_power_watts'] = df['pv_voltage'] * df['pv_current']
-
-# 2. Net Energy Flux = Solar Current - Load Current
 df['net_energy_flux'] = df['pv_current'] - df['load_current']
-
-# 3a. Contextual Ratio Feature (The Anomaly Discriminator)
-# This is the KEY feature for Isolation Forest:
-# A ratio near ~0.05 at midday (high lux) is physically impossible unless panels are shaded/faulted.
-# At night, both pv_current and irradiance_lux are low, so the ratio stays normal.
-# Formula: (pv_current / (irradiance_lux + 1)) * 1000 — scaled for numerical stability
 df['current_to_lux_ratio'] = (df['pv_current'] / (df['irradiance_lux'] + 1)) * 1000
 
-# 3. Rolling Averages (10-minute moving average of battery voltage)
+df['temp_delta'] = (df['temp_probe'] - df['temp_ambient']).round(2)
+
 df['batt_voltage_ma_10'] = df['batt_voltage'].rolling(window=10, min_periods=1).mean().round(2)
 
-# 4. State of Charge (SoC) Estimation
-# Using simple Voltage-SoC linear lookup
-# V_min = 10.5V (0%), V_max = 14.4V (100%)
 v_min = 10.5
 v_max = 14.4
 df['soc_percent'] = ((df['batt_voltage'] - v_min) / (v_max - v_min)) * 100
 df['soc_percent'] = df['soc_percent'].clip(0, 100).round(2)
 
-# Round new columns
 df['pv_power_watts'] = df['pv_power_watts'].round(2)
 df['net_energy_flux'] = df['net_energy_flux'].round(2)
 df['current_to_lux_ratio'] = df['current_to_lux_ratio'].round(4)
 
+df = df[[
+    'timestamp', 'pv_voltage', 'pv_current', 'pv_power_watts',
+    'batt_voltage', 'batt_voltage_ma_10', 'soc_percent',
+    'load_current', 'net_energy_flux',
+    'irradiance_lux', 'current_to_lux_ratio',
+    'temp_ambient', 'temp_probe', 'temp_delta',
+    'label'
+]]
+
 # Save
-filename = "solar_data_30days.csv"
+OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Note: Saving alongside train_models.py standard expectation
+filename = os.path.join(OUTPUT_DIR, "..", "ml_engine", "solar_data_30days.csv")
 df.to_csv(filename, index=False)
-print(f"saved to {filename}")
+print(f"Saved cleanly to {filename}")
 print(df.head())
 print(f"Anomalies: {df['label'].sum()} / {len(df)}")

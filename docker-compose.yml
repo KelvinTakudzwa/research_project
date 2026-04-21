@@ -35,8 +35,8 @@ services:
 
   ml-api:
     build:
-      context: ./backend
-      dockerfile: Dockerfile.ml
+      context: ./ml_engine
+      dockerfile: Dockerfile
     container_name: solar_ml_api
     restart: unless-stopped
     environment:
@@ -47,7 +47,7 @@ services:
       - TZ=Africa/Harare
     # Exposing only to the internal docker network -> port 8000
     volumes:
-      - ./backend/models:/app/models
+      - ./ml_engine/models:/app/models
     networks:
       - solar_net
 

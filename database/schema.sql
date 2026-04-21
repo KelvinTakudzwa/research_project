@@ -18,11 +18,13 @@ CREATE TABLE IF NOT EXISTS telemetry_data (
     pv_current      FLOAT,
     batt_voltage    FLOAT,
     load_current    FLOAT,
-    temperature     FLOAT,
+    temp_ambient    FLOAT COMMENT 'DS3231 Enclosure Air Temp',
+    temp_probe      FLOAT COMMENT 'DS18B20 Battery Surface Temp',
     irradiance_lux  FLOAT,
     -- Derived features calculated by Node.js before insert
     pv_power_watts  FLOAT,
     net_energy_flux FLOAT,
+    temp_delta      FLOAT COMMENT 'Sensor Fusion: Probe - Ambient',
     soc_percent     FLOAT,
     record_source   VARCHAR(20) DEFAULT 'realtime' -- 'realtime' | 'store_forward'
 );
