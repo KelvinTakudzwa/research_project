@@ -22,7 +22,9 @@ const getRecentAlerts = (limit = 10) => {
                 a.fault_category  AS alert_type,
                 a.severity        AS alert_severity,
                 t.soc_percent,
-                t.batt_voltage
+                t.batt_voltage,
+                i.anomaly_score,
+                i.pred_label
             FROM system_alerts a
             JOIN inference_results i ON a.inference_id = i.inference_id
             JOIN telemetry_data t ON i.telemetry_id = t.telemetry_id
