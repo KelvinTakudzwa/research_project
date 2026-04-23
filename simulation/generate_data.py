@@ -19,7 +19,7 @@ args = parser.parse_args()
 TARGET_MONTH = args.month
 
 # Configuration
-DAYS = 30
+DAYS = 365
 INTERVAL_MINUTES = 1
 TOTAL_STEPS = DAYS * 24 * 60 // INTERVAL_MINUTES
 START_TIME = datetime.now() - timedelta(days=DAYS)
@@ -81,7 +81,7 @@ cloud_depths = {s: random.uniform(0.3, 0.75) for s in cloud_steps}
 # ==========================================
 # Dual Temperature Model (Sensor Fusion)
 # ==========================================
-def compute_temperatures(hour: float, net_current: float, params: dict, is_fault_f3: bool = False) -> tuple:
+def compute_temperatures(hour: float, net_current: float, params: dict, current_soh: float, is_fault_f3: bool = False) -> tuple:
     T_low  = params['temp_amb_low']
     T_high = params['temp_amb_high']
     
@@ -92,6 +92,11 @@ def compute_temperatures(hour: float, net_current: float, params: dict, is_fault
     temp_ambient += np.random.normal(0, 0.3) 
 
     R_internal = 0.35 if is_fault_f3 else 0.08
+    
+    # Simulate battery aging: as SoH drops, internal resistance increases
+    aging_factor = max(0, (100.0 - current_soh) / 10.0) # 0.0 at 100% SoH, 1.0 at 90% SoH
+    R_internal += aging_factor * 0.15 # Up to +0.15 ohms from aging
+    
     i2r_rise   = (net_current ** 2) * R_internal
     i2r_rise   = max(0.0, i2r_rise)
     
@@ -116,11 +121,13 @@ temp_ambient_log = []
 temp_probe_log   = []   
 irradiance_lux = [] 
 labels = [] 
+soh_percents = []
 
 # Simulation State
 current_batt_voltage = 12.6 
 battery_capacity_ah = 100
 dt_hours = INTERVAL_MINUTES / 60.0
+current_soh = 100.0
 
 for step in range(TOTAL_STEPS):
     current_time = START_TIME + timedelta(minutes=step*INTERVAL_MINUTES)
@@ -170,16 +177,33 @@ for step in range(TOTAL_STEPS):
     l_amps = base_load + user_load
     load_current.append(round(l_amps, 2))
     
+    # --- SOH Degradation Simulation (Moved UP) ---
+    decay_rate = 10.0 / TOTAL_STEPS
+    # Add minor baseline decay 
+    current_soh -= decay_rate
+    current_soh += np.random.normal(0, 0.005) # Measurement noise
+    
     # 4. Battery Logic
     net_current = p_amps - l_amps
     delta_ah = net_current * dt_hours
     
+    # Degradation effect on capacity
+    effective_capacity = battery_capacity_ah * (current_soh / 100.0)
+    
     if net_current > 0:
-        current_batt_voltage += (delta_ah * 0.05) 
+        current_batt_voltage += (delta_ah / effective_capacity) * 5.0
     else:
-        current_batt_voltage += (delta_ah * 0.1) 
+        current_batt_voltage += (delta_ah / effective_capacity) * 10.0
         
     target_v = 12.7 if net_current == 0 else (14.0 if net_current > 0 else 11.5)
+    
+    # Voltage sag increases as SoH drops
+    sag_swell = max(0, (100.0 - current_soh) * 0.03)
+    if net_current > 0:
+        target_v += sag_swell
+    elif net_current < 0:
+        target_v -= sag_swell
+        
     current_batt_voltage = current_batt_voltage * 0.99 + target_v * 0.01 
     
     current_batt_voltage += np.random.normal(0, 0.02)
@@ -210,9 +234,16 @@ for step in range(TOTAL_STEPS):
     labels.append(is_anomaly)
 
     # 6. Temperatures
-    t_amb, t_probe = compute_temperatures(hour, net_current, params, is_fault_f3=is_fault_f3)
+    t_amb, t_probe = compute_temperatures(hour, net_current, params, current_soh, is_fault_f3=is_fault_f3)
     temp_ambient_log.append(t_amb)
     temp_probe_log.append(t_probe)
+
+    # 7. Fault-based SOH Degradation Simulation
+    if is_fault_f3 or is_anomaly:
+        current_soh -= (decay_rate * 4) # Accelerated degradation during faults/thermal events
+        
+    current_soh = max(0.0, min(100.0, current_soh))
+    soh_percents.append(round(current_soh, 2))
 
 # DataFrame Compilation
 df = pd.DataFrame({
@@ -224,6 +255,7 @@ df = pd.DataFrame({
     'temp_ambient':    temp_ambient_log,
     'temp_probe':      temp_probe_log,
     'irradiance_lux':  irradiance_lux,
+    'soh_percent':     soh_percents,
     'label':           labels
 })
 
@@ -252,13 +284,14 @@ df = df[[
     'load_current', 'net_energy_flux',
     'irradiance_lux', 'current_to_lux_ratio',
     'temp_ambient', 'temp_probe', 'temp_delta',
+    'soh_percent',
     'label'
 ]]
 
 # Save
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Note: Saving alongside train_models.py standard expectation
-filename = os.path.join(OUTPUT_DIR, "..", "ml_engine", "solar_data_30days.csv")
+filename = os.path.join(OUTPUT_DIR, "..", "ml_engine", "solar_data_365days.csv")
 df.to_csv(filename, index=False)
 print(f"Saved cleanly to {filename}")
 print(df.head())

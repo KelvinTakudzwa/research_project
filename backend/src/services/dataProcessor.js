@@ -44,6 +44,7 @@ const processSensorData = async (rawArray) => {
         const mlResult = await checkAnomaly(enrichedData);
         const predLabel    = mlResult.status      || 'Normal';
         const anomalyScore = mlResult.anomaly_score !== undefined ? mlResult.anomaly_score : null;
+        const sohPercent   = mlResult.soh_percent !== undefined ? mlResult.soh_percent : soc;
 
         const timeExpr = (raw.timestamp_unix && raw.timestamp_unix > 0)
             ? `FROM_UNIXTIME(${raw.timestamp_unix})`
@@ -54,7 +55,7 @@ const processSensorData = async (rawArray) => {
             const telemetryId = await insertTelemetry(enrichedData, timeExpr);
 
             // -- Step 2: INSERT inference --
-            const inferenceId = await insertInference(telemetryId, soc, anomalyScore, predLabel);
+            const inferenceId = await insertInference(telemetryId, sohPercent, anomalyScore, predLabel);
 
             // -- Step 3: INSERT ML alert --
             if (predLabel !== 'Normal' && predLabel !== 'Error') {

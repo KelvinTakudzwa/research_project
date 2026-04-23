@@ -119,8 +119,8 @@ def predict_anomaly(data: SensorData):
         # Select ordered features (just to be safe)
         X = df[feature_cols]
 
-        # 1. Random Forest Prediction (Health Class)
-        rf_pred = rf_model.predict(X)[0] # 0 = Normal, 1 = Anomaly
+        # 1. Random Forest Prediction (Continuous SoH Percent)
+        rf_pred = rf_model.predict(X)[0] # float e.g. 95.5
         
         # 2. Isolation Forest Prediction (Outlier Check)
         # IF returns 1 for Inlier (Normal), -1 for Outlier
@@ -130,17 +130,16 @@ def predict_anomaly(data: SensorData):
 
     # Decision Logic:
     # Primary gate = Isolation Forest (unsupervised, version-stable)
-    # RF only upgrades severity when BOTH models agree on an anomaly
     if not is_outlier:
         final_status = "Normal"            # IF says healthy -> trust it
-    elif rf_pred == 1:
-        final_status = "Known_Fault"       # Both agree -> high-confidence fault
+    elif rf_pred < 90.0:
+        final_status = "Known_Fault_Degradation"  # Both agree -> Battery aging / thermal runaway
     else:
-        final_status = "Unknown_Anomaly"   # Only IF flags it -> contextual anomaly
+        final_status = "Unknown_Anomaly"   # Only IF flags it -> generic shading/environmental anomaly
 
     return {
         "status":        final_status,
-        "rf_pred":       int(rf_pred),
+        "soh_percent":   round(float(rf_pred), 2),
         "is_outlier":    bool(is_outlier),
         "anomaly_score": round(if_score, 6)
     }

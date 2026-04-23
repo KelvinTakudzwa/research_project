@@ -4,6 +4,7 @@ import KpiGrid from '../components/dashboard/KpiGrid';
 import MainChart from '../components/dashboard/MainChart';
 import AlertFeed from '../components/dashboard/AlertFeed';
 import MlControl from '../components/dashboard/MlControl';
+import SystemHealthMonitor from '../components/dashboard/SystemHealthMonitor';
 
 const DashboardPage = () => {
     return (
@@ -37,12 +38,8 @@ const DashboardPage = () => {
                         <MlControl />
                     </div>
                     
-                    {/* Placeholder for future expansion (e.g. Battery Heatmap) */}
-                    <div className="lg:col-span-2 glass-panel flex items-center justify-center border-dashed border-slate-700/50 bg-slate-800/10">
-                        <span className="text-slate-600 text-sm uppercase tracking-widest font-semibold flex items-center gap-2">
-                            <span className="h-2 w-2 rounded-full bg-slate-600"></span>
-                            Expansion Module Slot
-                        </span>
+                    <div className="lg:col-span-2">
+                        <SystemHealthMonitor />
                     </div>
                 </div>
             </div>

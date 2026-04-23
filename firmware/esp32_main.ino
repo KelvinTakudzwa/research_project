@@ -16,6 +16,13 @@
 #include <Wire.h>          // I2C bus for DS3231
 #include <RTClib.h>        // Adafruit RTClib — DS3231 driver
 #include <Preferences.h>   // NVS storage for ACS712 calibration
+#include <OneWire.h>       // For DS18B20
+#include <DallasTemperature.h>
+
+// DS18B20 Battery Probe setup
+const int ONE_WIRE_BUS = 4; // Use GPIO4 by default
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature ds18b20(&oneWire);
 
 // ============================================================
 // NETWORK & BROKER CONFIGURATION
@@ -109,6 +116,10 @@ void setup() {
     rtcAvailable = false;
     Serial.println("[RTC] DS3231 NOT found — will fall back to NTP/millis().");
   }
+
+  // Initialize DS18B20 Probe
+  ds18b20.begin();
+  Serial.println("[DS18B20] Probe initialized on GPIO 4.");
 
   // Initialize LittleFS for Store & Forward
   if (!LittleFS.begin(true)) {
@@ -353,12 +364,22 @@ void loop() {
   // Calculate actual amperes using the dynamic NVS zero points (Simulation representation)
   // Actual: float pv_current = ((analogRead(PV_PIN) - pvZeroPoint) * (3.3 / 4095.0)) / SENSITIVITY;
 
+  // ── READ TEMPERATURES ───────────────────────────────────
+  // 1. Enclosure Ambient via DS3231 internal sensor
+  float temp_ambient = rtcAvailable ? rtc.getTemperature() : 25.0; 
+  
+  // 2. Battery Surface Probe via DS18B20
+  ds18b20.requestTemperatures();
+  float temp_probe = ds18b20.getTempCByIndex(0);
+  if (temp_probe == DEVICE_DISCONNECTED_C) temp_probe = 25.0; // Fallback if unplugged
+
   StaticJsonDocument<PAYLOAD_MAX_SZ> doc;
   doc["pv_voltage"]     = sim_pv_voltage;
   doc["pv_current"]     = random(0, 50)  / 10.0; // In reality, uses pvZeroPoint
   doc["batt_voltage"]   = random(110, 144) / 10.0;
   doc["load_current"]   = random(0, 30)  / 10.0; // In reality, uses loadZeroPoint
-  doc["temp"]           = random(250, 400) / 10.0;
+  doc["temp_ambient"]   = temp_ambient;
+  doc["temp_probe"]     = temp_probe;
   doc["irradiance_lux"] = current_lux;
   doc["timestamp_unix"] = (long)getCurrentTimestamp();
 

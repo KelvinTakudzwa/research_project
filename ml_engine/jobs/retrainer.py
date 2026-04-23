@@ -24,7 +24,7 @@ FEATURE_COLS = [
 ]
 
 # Path to the synthetic baseline CSV (packaged alongside this script in backend/)
-CSV_BASELINE = os.path.join(os.path.dirname(__file__), '..', 'solar_data_30days.csv')
+CSV_BASELINE = os.path.join(os.path.dirname(__file__), '..', 'solar_data_365days.csv')
 
 
 def retrain_isolation_forest():

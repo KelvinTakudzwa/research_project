@@ -6,14 +6,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 # 1. LOAD & ENHANCE DATA (Feature Engineering)
-# Note: Ensure 'solar_data_30days.csv' exists.
+# Note: Ensure 'solar_data_365days.csv' exists.
 # The previous step generated this file with slightly different column names for derived features.
 # You may need to map them:
 # pv_power_watts -> power_watts
 # net_energy_flux -> net_current
 # batt_voltage_ma_10 -> batt_v_smooth
 
-df = pd.read_csv("solar_data_30days.csv")
+df = pd.read_csv("solar_data_365days.csv")
 
 # Checks if columns exist, if not, create them (fallback if running on raw data)
 if 'pv_power_watts' in df.columns:

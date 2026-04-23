@@ -27,7 +27,7 @@ print("Fault injection: 1 shading event every ~60 seconds (5% rate).")
 print("Check your http://localhost:8080/ dashboard to see the live feed!")
 
 # Load realistic daylight data from baseline CSV to appease Isolation Forest physics
-csv_path = os.path.join(os.path.dirname(__file__), "..", "ml_engine", "solar_data_30days.csv")
+csv_path = os.path.join(os.path.dirname(__file__), "..", "ml_engine", "solar_data_365days.csv")
 daylight_rows = []
 try:
     with open(csv_path, 'r') as f:
