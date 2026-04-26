@@ -1,14 +1,19 @@
-// Native Fetch is available in Node > 18
-const checkAnomaly = async (dataPacket) => {
+const { getServiceToken } = require('./serviceAuth');
+
+const checkAnomaly = async (normalizedVector) => {
     const ML_API_URL = process.env.ML_API_URL || 'http://127.0.0.1:8000';
     const controller = new AbortController();
-    const timeout    = setTimeout(() => controller.abort(), 5000); // 5 second hard timeout
+    const timeout    = setTimeout(() => controller.abort(), 5000);
+
     try {
         const response = await fetch(`${ML_API_URL}/predict`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(dataPacket),
-            signal: controller.signal
+            method:  'POST',
+            headers: {
+                'Content-Type':  'application/json',
+                'Authorization': `Bearer ${getServiceToken()}`,
+            },
+            body:   JSON.stringify(normalizedVector),
+            signal: controller.signal,
         });
         clearTimeout(timeout);
         if (!response.ok) {
@@ -23,11 +28,8 @@ const checkAnomaly = async (dataPacket) => {
         } else {
             console.warn('[ML] Service unreachable:', error.message, '— defaulting to Normal.');
         }
-        // Fail open: save the raw data as Normal so the DB keeps populating
         return { status: 'Normal', anomaly_score: null };
     }
 };
 
-module.exports = {
-    checkAnomaly
-};
+module.exports = { checkAnomaly };

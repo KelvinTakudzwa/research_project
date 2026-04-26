@@ -1,8 +1,8 @@
 Metric,Value,Target Promise
-IF Precision,0.9222,>0.90
-IF Recall,0.9881,N/A
-IF F1-Score,0.9540,>0.90
-RF RMSE (%),2.7817,<5.0
-RF MAE (%),1.9550,<5.0
-RF MAPE (%),2.1190,<5.0
-RF R²,0.6968,>0.50
+IF Precision,0.9545,>0.90
+IF Recall,1.0000,N/A
+IF F1-Score,0.9767,>0.90
+RF RMSE (%),2.7557,<5.0
+RF MAE (%),1.9313,<5.0
+RF MAPE (%),2.0929,<5.0
+RF R2,0.7024,>0.50

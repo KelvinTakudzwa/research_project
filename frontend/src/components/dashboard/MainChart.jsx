@@ -1,7 +1,7 @@
 import React from 'react';
 import { useSolarData } from '../../hooks/useSolarData';
-import { 
-    ResponsiveContainer, ComposedChart, Line, Area, XAxis, YAxis, 
+import {
+    ResponsiveContainer, ComposedChart, Line, Area, XAxis, YAxis,
     CartesianGrid, Tooltip, Legend, ReferenceLine
 } from 'recharts';
 
@@ -16,10 +16,11 @@ const MainChart = () => {
         );
     }
 
-    // Format time for X-Axis
     const formattedData = history.map(d => ({
         ...d,
-        timeLabel: new Date(d.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        timeLabel: new Date(d.timestamp).toLocaleTimeString([], {
+            hour: '2-digit', minute: '2-digit', second: '2-digit'
+        })
     }));
 
     return (
@@ -37,45 +38,51 @@ const MainChart = () => {
                     <ComposedChart data={formattedData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                         <defs>
                             <linearGradient id="colorPower" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#818cf8" stopOpacity={0.3}/>
-                                <stop offset="95%" stopColor="#818cf8" stopOpacity={0}/>
-                            </linearGradient>
-                            <linearGradient id="colorVoltage" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.1}/>
-                                <stop offset="95%" stopColor="#22d3ee" stopOpacity={0}/>
+                                <stop offset="5%"  stopColor="#818cf8" stopOpacity={0.3} />
+                                <stop offset="95%" stopColor="#818cf8" stopOpacity={0} />
                             </linearGradient>
                         </defs>
-                        
+
                         <CartesianGrid strokeDasharray="3 3" stroke="#ffffff15" vertical={false} />
-                        
-                        <XAxis 
-                            dataKey="timeLabel" 
-                            stroke="#94a3b8" 
-                            fontSize={11} 
+
+                        <XAxis
+                            dataKey="timeLabel"
+                            stroke="#94a3b8"
+                            fontSize={11}
                             tickMargin={10}
                             axisLine={false}
                             tickLine={false}
                         />
-                        
-                        <YAxis 
-                            yAxisId="left" 
-                            stroke="#94a3b8" 
+
+                        {/* Left axis — watts (power + net flux) */}
+                        <YAxis
+                            yAxisId="left"
+                            stroke="#94a3b8"
                             fontSize={11}
                             axisLine={false}
                             tickLine={false}
                         />
-                        <YAxis 
-                            yAxisId="right" 
-                            orientation="right" 
-                            stroke="#94a3b8" 
+                        {/* Right axis — volts */}
+                        <YAxis
+                            yAxisId="right"
+                            orientation="right"
+                            stroke="#94a3b8"
                             fontSize={11}
                             axisLine={false}
                             tickLine={false}
                         />
-                        
-                        <Tooltip 
-                            contentStyle={{ 
-                                backgroundColor: 'rgba(15, 23, 42, 0.9)', 
+
+                        {/* Zero-crossing reference — makes charge/discharge crossover obvious */}
+                        <ReferenceLine
+                            yAxisId="left"
+                            y={0}
+                            stroke="#ffffff25"
+                            strokeDasharray="4 4"
+                        />
+
+                        <Tooltip
+                            contentStyle={{
+                                backgroundColor: 'rgba(15, 23, 42, 0.9)',
                                 backdropFilter: 'blur(10px)',
                                 borderColor: 'rgba(255,255,255,0.1)',
                                 borderRadius: '12px',
@@ -85,44 +92,59 @@ const MainChart = () => {
                             itemStyle={{ fontSize: '13px', padding: '2px 0' }}
                             labelStyle={{ color: '#94a3b8', marginBottom: '8px', fontSize: '12px' }}
                         />
-                        
-                        <Legend wrapperStyle={{ paddingTop: '20px', fontSize: '12px' }} iconType="circle" />
 
-                        {/* Power Area */}
-                        <Area 
+                        <Legend
+                            wrapperStyle={{ paddingTop: '20px', fontSize: '12px' }}
+                            iconType="circle"
+                        />
+
+                        {/* PV generation — filled area */}
+                        <Area
                             yAxisId="left"
-                            type="monotone" 
-                            dataKey="pv_power_watts" 
-                            name="PV Power (W)" 
-                            stroke="#818cf8" 
+                            type="monotone"
+                            dataKey="pv_power_w"
+                            name="PV Power (W)"
+                            stroke="#818cf8"
                             strokeWidth={3}
-                            fillOpacity={1} 
-                            fill="url(#colorPower)" 
+                            fillOpacity={1}
+                            fill="url(#colorPower)"
                             activeDot={{ r: 6, fill: '#818cf8', stroke: '#fff', strokeWidth: 2 }}
                             isAnimationActive={false}
                         />
-                        
-                        {/* Voltage Line */}
-                        <Line 
-                            yAxisId="right"
-                            type="monotone" 
-                            dataKey="pv_voltage" 
-                            name="PV Voltage (V)" 
-                            stroke="#22d3ee" 
+
+                        {/* AC consumption — dashed amber line */}
+                        <Line
+                            yAxisId="left"
+                            type="monotone"
+                            dataKey="ac_power_w"
+                            name="AC Load (W)"
+                            stroke="#fbbf24"
+                            strokeWidth={2}
+                            strokeDasharray="4 4"
+                            dot={false}
+                            isAnimationActive={false}
+                        />
+
+                        {/* Net energy flux — emerald solid line; positive = surplus, negative = deficit */}
+                        <Line
+                            yAxisId="left"
+                            type="monotone"
+                            dataKey="net_energy_flux_w"
+                            name="Net Flux (W)"
+                            stroke="#34d399"
                             strokeWidth={2}
                             dot={false}
                             isAnimationActive={false}
                         />
-                        
-                        {/* Load Current Line */}
-                        <Line 
-                            yAxisId="left"
-                            type="monotone" 
-                            dataKey="load_current" 
-                            name="Load Current (A)" 
-                            stroke="#fbbf24" 
-                            strokeWidth={2}
-                            strokeDasharray="4 4"
+
+                        {/* PV voltage — right axis */}
+                        <Line
+                            yAxisId="right"
+                            type="monotone"
+                            dataKey="pv_voltage_v"
+                            name="PV Voltage (V)"
+                            stroke="#22d3ee"
+                            strokeWidth={1.5}
                             dot={false}
                             isAnimationActive={false}
                         />

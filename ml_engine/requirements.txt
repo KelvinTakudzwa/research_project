@@ -7,3 +7,4 @@ joblib==1.4.2
 apscheduler==3.10.4
 mysql-connector-python==8.4.0
 sqlalchemy==2.0.30
+python-jose[cryptography]==3.3.0

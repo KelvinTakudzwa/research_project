@@ -1,20 +1,16 @@
-version: '3.8'
-
 services:
   db:
     image: mysql:8.0
     container_name: solar_mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: 0786682192@Tk
-      MYSQL_DATABASE: solar_monitoring
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-solar_monitoring}
       TZ: Africa/Harare
     volumes:
       - mysql_data:/var/lib/mysql
-      # Map the schema SQL to initialize the DB automatically on first run
       - ./database/schema.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      # Expose on 3307 (not 3306) to avoid conflict with local MySQL80 Windows service
       - "3307:3306"
     networks:
       - solar_net
@@ -23,11 +19,11 @@ services:
     image: eclipse-mosquitto:2.0
     container_name: solar_broker
     restart: unless-stopped
-    # Only map external 1883 so ESP32 can connect
     ports:
-      - "1883:1883"
+      - "8883:8883"
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/certs:/mosquitto/config/certs:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
     networks:
@@ -40,12 +36,28 @@ services:
     container_name: solar_ml_api
     restart: unless-stopped
     environment:
-      - DB_HOST=db
-      - DB_USER=root
-      - DB_PASSWORD=0786682192@Tk
-      - DB_NAME=solar_monitoring
+      - DB_HOST=${DB_HOST:-db}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME:-solar_monitoring}
+      - JWT_SERVICE_SECRET=${JWT_SERVICE_SECRET}
+      # System identity — used by retrainer.py for bound normalization
+      - BATTERY_CHEMISTRY=${BATTERY_CHEMISTRY}
+      - BATTERY_NOMINAL_VOLTAGE_V=${BATTERY_NOMINAL_VOLTAGE_V:-12}
+      - RATED_PV_WATTAGE_W=${RATED_PV_WATTAGE_W:-200}
+      - RATED_INVERTER_WATTAGE_W=${RATED_INVERTER_WATTAGE_W:-300}
+      - MAX_PV_VOLTAGE_V=${MAX_PV_VOLTAGE_V:-21.6}
+      - MAX_PV_CURRENT_A=${MAX_PV_CURRENT_A:-}
+      - MAX_PV_POWER_W=${MAX_PV_POWER_W:-}
+      - MAX_BATTERY_VOLTAGE_V=${MAX_BATTERY_VOLTAGE_V:-}
+      - MAX_BATTERY_CURRENT_A=${MAX_BATTERY_CURRENT_A:-}
+      - MAX_AC_POWER_W=${MAX_AC_POWER_W:-}
+      - MAX_AC_VOLTAGE_V=${MAX_AC_VOLTAGE_V:-240}
+      - MAX_AC_CURRENT_A=${MAX_AC_CURRENT_A:-}
+      - MAX_IRRADIANCE_WM2=${MAX_IRRADIANCE_WM2:-1000}
       - TZ=Africa/Harare
-    # Exposing only to the internal docker network -> port 8000
+      - PYTHONUNBUFFERED=1
+      - RETRAIN_LOOKBACK_DAYS=365
     volumes:
       - ./ml_engine/models:/app/models
     networks:
@@ -58,13 +70,34 @@ services:
     container_name: solar_node_api
     restart: unless-stopped
     environment:
-      - DB_HOST=db
-      - DB_USER=root
-      - DB_PASSWORD=0786682192@Tk
-      - DB_NAME=solar_monitoring
-      - MQTT_BROKER=mqtt://broker
-      - ML_API_URL=http://ml-api:8000
+      - DB_HOST=${DB_HOST:-db}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME:-solar_monitoring}
+      - MQTT_BROKER=${MQTT_BROKER:-mqtts://broker:8883}
+      - ML_API_URL=${ML_API_URL:-http://ml-api:8000}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_SERVICE_SECRET=${JWT_SERVICE_SECRET}
+      - DASHBOARD_USER=${DASHBOARD_USER:-admin}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      # System identity — used by systemBounds.js
+      - BATTERY_CHEMISTRY=${BATTERY_CHEMISTRY}
+      - BATTERY_NOMINAL_VOLTAGE_V=${BATTERY_NOMINAL_VOLTAGE_V:-12}
+      - RATED_PV_WATTAGE_W=${RATED_PV_WATTAGE_W:-200}
+      - RATED_INVERTER_WATTAGE_W=${RATED_INVERTER_WATTAGE_W:-300}
+      - MAX_PV_VOLTAGE_V=${MAX_PV_VOLTAGE_V:-21.6}
+      - MAX_PV_CURRENT_A=${MAX_PV_CURRENT_A:-}
+      - MAX_PV_POWER_W=${MAX_PV_POWER_W:-}
+      - MAX_BATTERY_VOLTAGE_V=${MAX_BATTERY_VOLTAGE_V:-}
+      - MAX_BATTERY_CURRENT_A=${MAX_BATTERY_CURRENT_A:-}
+      - MAX_AC_POWER_W=${MAX_AC_POWER_W:-}
+      - MAX_AC_VOLTAGE_V=${MAX_AC_VOLTAGE_V:-240}
+      - MAX_AC_CURRENT_A=${MAX_AC_CURRENT_A:-}
+      - MAX_IRRADIANCE_WM2=${MAX_IRRADIANCE_WM2:-1000}
       - TZ=Africa/Harare
+    volumes:
+      # CA cert for verifying the Mosquitto TLS certificate
+      - ./mosquitto/certs/ca.crt:/app/certs/ca.crt:ro
     depends_on:
       - db
       - broker
@@ -79,7 +112,6 @@ services:
     container_name: solar_dashboard
     restart: unless-stopped
     ports:
-      # Map container Nginx port 80 to host port 8080 to completely bypass local PWA cache
       - "8080:80"
     depends_on:
       - backend
