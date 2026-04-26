@@ -2,6 +2,11 @@ import subprocess
 import sys
 import os
 import io
+from dotenv import load_dotenv, find_dotenv
+
+# Load .env from project root so all env vars (BATTERY_CHEMISTRY, bounds, etc.)
+# are available here AND in every child subprocess via env=os.environ.copy().
+load_dotenv(find_dotenv())
 
 # Force UTF-8 output on Windows so box-drawing characters render correctly.
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':

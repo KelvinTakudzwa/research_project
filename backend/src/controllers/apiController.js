@@ -1,6 +1,7 @@
 const { getRecentReadings } = require('../models/telemetryModel');
 const { getRecentAlerts } = require('../models/alertModel');
 const { processSensorData } = require('../services/dataProcessor');
+const { getServiceToken } = require('../services/serviceAuth');
 
 // GET /api/readings — Dashboard data (last 100), joined with ML results
 const getReadings = async (req, res) => {
@@ -44,12 +45,13 @@ const getCalibrationLog = async (req, res) => {
     });
 };
 
-// POST /api/ml/retrain
+// POST /api/trigger_retraining
 const triggerRetrain = async (req, res) => {
     const ML_API_URL = process.env.ML_API_URL || 'http://127.0.0.1:8000';
     try {
         const response = await fetch(`${ML_API_URL}/trigger_retraining`, {
-            method: 'POST'
+            method:  'POST',
+            headers: { 'Authorization': `Bearer ${getServiceToken()}` },
         });
         const data = await response.json();
         res.json(data);

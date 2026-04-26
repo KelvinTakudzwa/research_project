@@ -10,6 +10,13 @@ build/
 .env
 .env.*
 *.env
+# Allow the documented example (not a secret)
+!.env.example
+
+# TLS certificates — private keys must never be committed
+mosquitto/certs/*.key
+mosquitto/certs/*.crt
+mosquitto/certs/*.srl
 
 # OS Artifacts
 .DS_Store

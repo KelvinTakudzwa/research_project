@@ -1,6 +1,6 @@
 import React from 'react';
 import { useSolarData } from '../../hooks/useSolarData';
-import { AlertTriangle, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, ShieldCheck, AlertOctagon } from 'lucide-react';
 
 const AlertFeed = () => {
     const { alerts } = useSolarData();
@@ -25,32 +25,73 @@ const AlertFeed = () => {
                     </div>
                 ) : (
                     <div className="flex flex-col gap-3">
-                        {alerts.map((alert, index) => (
-                            <div 
-                                key={index} 
-                                className="p-3.5 rounded-xl bg-red-900/10 border border-red-500/20 flex flex-col gap-2 hover:bg-red-900/20 transition-colors animate-slide-in shadow-[inset_0_0_20px_rgba(239,68,68,0.05)]"
-                                style={{ animationDelay: `${index * 50}ms` }}
-                            >
-                                <div className="flex justify-between items-start">
-                                    <span className="text-sm font-bold text-red-400 tracking-wide glow-text-soft">
-                                        {alert.alert_type || alert.pred_label || "Fault Event"}
-                                    </span>
-                                    <span className="text-[10px] text-slate-400 tabular-nums">
-                                        {new Date(alert.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                                    </span>
-                                </div>
-                                <div className="flex justify-between items-end border-t border-red-500/10 pt-2 mt-1">
-                                    <div className="flex flex-col gap-0.5">
-                                        <span className="text-[10px] text-slate-500 uppercase tracking-widest">Confidence</span>
-                                        <span className="text-xs text-red-300 font-medium">{Math.abs(alert.anomaly_score).toFixed(4)}</span>
+                        {alerts.map((alert, index) => {
+                            const isCritical = alert.alert_severity === 'Critical';
+                            const Icon = isCritical ? AlertOctagon : AlertTriangle;
+
+                            // Colour scheme driven by severity
+                            const borderColor  = isCritical ? 'border-red-500/20'    : 'border-amber-500/20';
+                            const bgColor      = isCritical ? 'bg-red-900/10'        : 'bg-amber-900/10';
+                            const bgHover      = isCritical ? 'hover:bg-red-900/20'  : 'hover:bg-amber-900/20';
+                            const textColor    = isCritical ? 'text-red-400'         : 'text-amber-400';
+                            const subTextColor = isCritical ? 'text-red-300'         : 'text-amber-300';
+                            const divider      = isCritical ? 'border-red-500/10'    : 'border-amber-500/10';
+                            const innerGlow    = isCritical
+                                ? 'shadow-[inset_0_0_20px_rgba(239,68,68,0.05)]'
+                                : 'shadow-[inset_0_0_20px_rgba(251,191,36,0.05)]';
+
+                            // Deterministic alarms (thermal runaway, deep discharge) have no ML score
+                            const confidenceDisplay = alert.anomaly_score != null
+                                ? Math.abs(alert.anomaly_score).toFixed(4)
+                                : 'Rule-based';
+
+                            return (
+                                <div
+                                    key={index}
+                                    className={`p-3.5 rounded-xl ${bgColor} border ${borderColor} flex flex-col gap-2 ${bgHover} transition-colors animate-slide-in ${innerGlow}`}
+                                    style={{ animationDelay: `${index * 50}ms` }}
+                                >
+                                    {/* Header row */}
+                                    <div className="flex justify-between items-start gap-2">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                            <Icon size={13} className={`${textColor} shrink-0`} />
+                                            <span className={`text-sm font-bold ${textColor} tracking-wide truncate`}>
+                                                {alert.alert_type || alert.pred_label || 'Fault Event'}
+                                            </span>
+                                        </div>
+                                        <span className="text-[10px] text-slate-400 tabular-nums shrink-0">
+                                            {new Date(alert.timestamp).toLocaleTimeString([], {
+                                                hour: '2-digit', minute: '2-digit', second: '2-digit'
+                                            })}
+                                        </span>
                                     </div>
-                                    <div className="flex flex-col gap-0.5 text-right">
-                                        <span className="text-[10px] text-slate-500 uppercase tracking-widest">Battery</span>
-                                        <span className="text-xs text-red-300 font-medium">{alert.batt_voltage}V</span>
+
+                                    {/* Severity badge */}
+                                    <span className={`self-start text-[9px] uppercase tracking-widest font-bold px-2 py-0.5 rounded-full border ${
+                                        isCritical
+                                            ? 'bg-red-500/10 border-red-500/30 text-red-300'
+                                            : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                                    }`}>
+                                        {alert.alert_severity || 'Warning'}
+                                    </span>
+
+                                    {/* Stats footer */}
+                                    <div className={`flex justify-between items-end border-t ${divider} pt-2 mt-1`}>
+                                        <div className="flex flex-col gap-0.5">
+                                            <span className="text-[10px] text-slate-500 uppercase tracking-widest">Confidence</span>
+                                            <span className={`text-xs ${subTextColor} font-medium`}>{confidenceDisplay}</span>
+                                        </div>
+                                        <div className="flex flex-col gap-0.5 text-right">
+                                            <span className="text-[10px] text-slate-500 uppercase tracking-widest">Batt / SoC</span>
+                                            <span className={`text-xs ${subTextColor} font-medium`}>
+                                                {alert.battery_voltage_v != null ? `${alert.battery_voltage_v.toFixed(2)}V` : '--'}
+                                                {alert.soc_percent != null ? ` / ${alert.soc_percent.toFixed(0)}%` : ''}
+                                            </span>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>
