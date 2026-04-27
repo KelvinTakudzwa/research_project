@@ -1,5 +1,5 @@
 Fault Type,ML Detection Rate (%),Baseline Detection Rate (%)
-Partial Shading (F1),100.0,0.0
+Partial Shading (F1),4.8,0.0
 Inverter Overload (F2),100.0,0.0
 Deep Discharge (F3),100.0,100.0
-Sensor Blanking (F5),100.0,0.0
+Sensor Blanking (F5),100.0,100.0

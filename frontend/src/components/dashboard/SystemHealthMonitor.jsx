@@ -60,7 +60,7 @@ const SystemHealthMonitor = () => {
                     </svg>
                     <div className="absolute flex flex-col items-center justify-center">
                         <span className="text-xl font-bold text-white tracking-tight">{soh_percent ? soh_percent.toFixed(1) : '--'}%</span>
-                        <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">SoH</span>
+                        <span className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Health</span>
                     </div>
                 </div>
 

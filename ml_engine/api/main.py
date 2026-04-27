@@ -119,27 +119,43 @@ def predict_anomaly(data: SensorData, _=Depends(verify_service_token)):
         X  = df[FEATURE_COLS]
 
         try:
-            rf_pred  = rf_model.predict(X)[0]
+            rf_pred_class = rf_model.predict(X)[0]           # e.g. "F2_Inverter_Overload"
+            rf_proba      = rf_model.predict_proba(X)[0]      # prob per class
+            class_names   = list(rf_model.classes_)
+            confidence    = float(max(rf_proba))              # confidence in predicted class
+
+            # health_score = P(Normal) × 100:  100 = healthy, 0 = definite fault
+            normal_idx    = class_names.index('Normal')
+            health_score  = round(float(rf_proba[normal_idx]) * 100, 2)
+
             if_pred  = if_model.predict(X)[0]
             if_score = float(if_model.decision_function(X)[0])
         except Exception as e:
-            # Stale models trained on old feature schema — fail gracefully until
-            # a retrain cycle completes and hot-swaps compatible models.
-            print(f"[ML_API] Model feature mismatch (retrain needed): {e}")
+            print(f"[ML_API] Model mismatch (retrain needed): {e}")
             raise HTTPException(status_code=503, detail="Models are stale — retrain in progress.")
 
         is_outlier = (if_pred == -1)
 
-    if not is_outlier:
+    # Two-stage decision with confidence-driven severity:
+    #   Stage 1 — IF: unsupervised anomaly gate (fast, no labels needed)
+    #   Stage 2 — RF: identifies specific fault class + confidence
+    #
+    #   confidence >= 0.75 → specific fault label (Critical)
+    #   0.50 ≤ conf < 0.75 → specific fault label (Warning — less certain)
+    #   conf < 0.50 + IF anomaly → Uncertain_Anomaly soft indicator
+    if not is_outlier and rf_pred_class == 'Normal':
         final_status = "Normal"
-    elif rf_pred < 90.0:
-        final_status = "Known_Fault_Degradation"
+    elif rf_pred_class != 'Normal' and confidence >= 0.50:
+        final_status = rf_pred_class        # F1_Partial_Shading, F2_Inverter_Overload, etc.
+    elif is_outlier:
+        final_status = "Uncertain_Anomaly"  # IF flagged but RF not confident
     else:
-        final_status = "Unknown_Anomaly"
+        final_status = "Normal"
 
     return {
         "status":        final_status,
-        "soh_percent":   round(float(rf_pred), 2),
+        "soh_percent":   health_score,          # P(Normal)×100 — dashboard ring
+        "confidence":    round(confidence, 4),  # confidence in the predicted class
         "is_outlier":    bool(is_outlier),
         "anomaly_score": round(if_score, 6),
     }

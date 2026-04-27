@@ -1,4 +1,4 @@
-"""
+﻿"""
 train_models.py — Trains RF and IF models on the new 15-feature normalized schema.
 
 Derives normalized features from the original CSV (old column names) using the
@@ -19,10 +19,10 @@ import matplotlib
 matplotlib.use('Agg')   # headless / no display required
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.ensemble import RandomForestRegressor, IsolationForest
-from sklearn.model_selection import train_test_split, GridSearchCV, KFold
-from sklearn.metrics import (mean_squared_error, r2_score, mean_absolute_error,
-                             mean_absolute_percentage_error, confusion_matrix)
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
+from sklearn.metrics import (accuracy_score, classification_report,
+                             confusion_matrix, ConfusionMatrixDisplay)
 
 # -- Paths ---------------------------------------------------------------------
 BASE      = os.path.dirname(os.path.abspath(__file__))
@@ -136,159 +136,172 @@ y_clf = df.loc[X.index, 'label']
 print(f"\nFeature matrix : {X.shape}")
 print(f"Anomaly count  : {int(y_clf.sum())} / {len(y_clf)} ({y_clf.mean()*100:.2f}%)")
 
-# -- Train / test split --------------------------------------------------------
-X_train, X_test, y_train, y_test, y_clf_train, y_clf_test = train_test_split(
-    X, y, y_clf, test_size=0.2, random_state=42
+# ── Train / test split (binary labels — used by IF) ────────────────────────────
+X_train, X_test, y_clf_train, y_clf_test = train_test_split(
+    X, y_clf, test_size=0.2, random_state=42, stratify=y_clf
 )
 
 # ===============================================================================
-# 1. Random Forest Regressor — SoH prediction
-#    Two-phase approach:
-#      Phase 1: 5-fold GridSearchCV on a 10% CV sample to find best params
-#      Phase 2: Final model trained on the full training partition
+# 1. Random Forest Multiclass Classifier — Fault Identification
+#
+#    Five classes: Normal | F1_Partial_Shading | F2_Inverter_Overload |
+#                          F3_Deep_Discharge   | F5_Sensor_Dead
+#
+#    Training data is synthesised from the CSV's Normal rows by applying the
+#    same fault-injection physics used in the simulator. The model learns what
+#    each fault LOOKS LIKE in the normalized feature space.
+#
+#    Confidence from predict_proba() drives severity in the live pipeline:
+#      conf >= 0.75  → Critical
+#      0.5 ≤ conf < 0.75 → Warning  (fault identified, less certain)
+#      conf < 0.5 + IF anomaly → Uncertain_Anomaly soft indicator
 # ===============================================================================
-print("\n--- Random Forest Regressor (5-fold GridSearchCV) ---------------------")
+print("\n--- Multiclass Fault Dataset Generation --------------------------------")
 
-# ── Phase 1: Hyperparameter search on 10% sample ──────────────────────────────
-# Running GridSearchCV on 420k rows × 80 fits would take ~60 min.
-# A 10% stratified sample (~42k rows) is statistically representative and
-# keeps the search under 5 minutes while preserving the target distribution.
-_, X_cv, _, y_cv = train_test_split(
-    X_train, y_train, test_size=0.10, random_state=42
+rng      = np.random.default_rng(42)
+N_NORMAL = 50_000
+N_FAULT  = 12_500
+
+# Normal: sample from clean CSV rows
+n_idx  = rng.choice(np.where(y_clf == 0)[0], N_NORMAL, replace=False)
+X_norm = X.iloc[n_idx].copy(); y_norm = np.full(N_NORMAL, 'Normal')
+
+# F1 Partial Shading — irradiance stays high but PV current collapses
+f1_idx = rng.choice(np.where(y_clf == 0)[0], N_FAULT, replace=False)
+X_f1   = X.iloc[f1_idx].copy()
+X_f1['pv_current_norm'] = rng.uniform(0.0, 0.06, N_FAULT)
+X_f1['pv_power_norm']   = X_f1['pv_voltage_norm'] * X_f1['pv_current_norm']
+X_f1['net_flux_norm']   = X_f1['pv_power_norm'] - X_f1['ac_power_norm']
+y_f1 = np.full(N_FAULT, 'F1_Partial_Shading')
+
+# F2 Inverter Overload — AC load spikes, battery temp rises, voltage sags
+f2_idx = rng.choice(np.where(y_clf == 0)[0], N_FAULT, replace=False)
+X_f2   = X.iloc[f2_idx].copy()
+X_f2['ac_power_norm']        = np.clip(X_f2['ac_power_norm']   * rng.uniform(2.0, 3.0, N_FAULT), 0, 1.5)
+X_f2['ac_current_norm']      = np.clip(X_f2['ac_current_norm'] * rng.uniform(2.0, 3.0, N_FAULT), 0, 1.5)
+X_f2['battery_temp_c']       = X_f2['battery_temp_c'] + rng.uniform(15, 25, N_FAULT)
+X_f2['temp_delta_c']         = X_f2['battery_temp_c'] - X_f2['ambient_temp_c']
+X_f2['battery_voltage_norm'] = np.clip(X_f2['battery_voltage_norm'] - rng.uniform(0.02, 0.05, N_FAULT), 0, 1)
+X_f2['net_flux_norm']        = X_f2['pv_power_norm'] - X_f2['ac_power_norm']
+y_f2 = np.full(N_FAULT, 'F2_Inverter_Overload')
+
+# F3 Deep Discharge — battery below chemistry threshold, system goes dark
+# battery_voltage_norm ~0.71 = 10.2V / 14.4V (below 10.5V threshold)
+f3_idx = rng.choice(np.where(y_clf == 0)[0], N_FAULT, replace=False)
+X_f3   = X.iloc[f3_idx].copy()
+X_f3['battery_voltage_norm'] = rng.uniform(0.60, 0.73, N_FAULT)
+X_f3['soc_percent']          = rng.uniform(0.0,  8.0,  N_FAULT)
+X_f3['pv_current_norm']      = 0.0
+X_f3['pv_power_norm']        = 0.0
+X_f3['irradiance_norm']      = 0.0
+X_f3['ac_power_norm']        = np.clip(X_f3['ac_power_norm'] * 0.3, 0, 1)
+X_f3['ac_current_norm']      = np.clip(X_f3['ac_current_norm'] * 0.3, 0, 1)
+X_f3['net_flux_norm']        = -X_f3['ac_power_norm']
+y_f3 = np.full(N_FAULT, 'F3_Deep_Discharge')
+
+# F5 Sensor Dead — current sensors blank while irradiance still present
+f5_idx = rng.choice(np.where(y_clf == 0)[0], N_FAULT, replace=False)
+X_f5   = X.iloc[f5_idx].copy()
+X_f5['pv_current_norm']      = 0.0
+X_f5['pv_power_norm']        = 0.0
+X_f5['battery_current_norm'] = 0.0
+X_f5['battery_power_norm']   = 0.0
+X_f5['ac_power_norm']        = 0.0
+X_f5['ac_current_norm']      = 0.0
+X_f5['net_flux_norm']        = 0.0
+y_f5 = np.full(N_FAULT, 'F5_Sensor_Dead')
+
+X_multi = pd.concat([X_norm, X_f1, X_f2, X_f3, X_f5], ignore_index=True)
+y_multi = np.concatenate([y_norm, y_f1, y_f2, y_f3, y_f5])
+print(f"Multiclass dataset: {len(X_multi):,} rows")
+for cls in np.unique(y_multi):
+    print(f"  {cls:<28} {(y_multi == cls).sum():>6,}")
+
+X_train_m, X_test_m, y_train_m, y_test_m = train_test_split(
+    X_multi, y_multi, test_size=0.2, random_state=42, stratify=y_multi
 )
-print(f"CV sample  : {len(X_cv):,} rows  (10% of training partition)")
-print(f"Full train : {len(X_train):,} rows  (used for final fit)")
 
-param_grid = {
-    'n_estimators': [100, 150, 200, 250],
-    'max_depth':    [10,  15,  20,  25],
-}
-cv_splitter = KFold(n_splits=5, shuffle=True, random_state=42)
+# ── 5-fold Stratified GridSearchCV on 10% sample ─────────────────────────────
+print("\n--- RF Multiclass Classifier (5-fold CV, f1_weighted) -----------------")
+_, X_cv_m, _, y_cv_m = train_test_split(
+    X_train_m, y_train_m, test_size=0.10, random_state=42, stratify=y_train_m
+)
+print(f"CV sample  : {len(X_cv_m):,} rows | Full train: {len(X_train_m):,} rows")
 
-print(f"\nRunning GridSearchCV: {len(param_grid['n_estimators']) * len(param_grid['max_depth'])} "
-      f"combinations x 5 folds = "
-      f"{len(param_grid['n_estimators']) * len(param_grid['max_depth']) * 5} fits ...")
+param_grid  = {'n_estimators': [100, 150, 200, 250], 'max_depth': [10, 15, 20, 25]}
+cv_splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+print(f"GridSearchCV: 16 combos x 5 folds = 80 fits ...")
 
 grid_search = GridSearchCV(
-    RandomForestRegressor(min_samples_leaf=5, n_jobs=-1, random_state=42),
-    param_grid   = param_grid,
-    cv           = cv_splitter,
-    scoring      = 'neg_root_mean_squared_error',
-    n_jobs       = -1,
-    verbose      = 1,
-    refit        = False,   # final fit uses full X_train — done explicitly below
+    RandomForestClassifier(class_weight='balanced', n_jobs=-1, random_state=42),
+    param_grid=param_grid, cv=cv_splitter, scoring='f1_weighted',
+    n_jobs=-1, verbose=1, refit=False,
 )
-grid_search.fit(X_cv, y_cv)
+grid_search.fit(X_cv_m, y_cv_m)
 
 best_params = grid_search.best_params_
-best_cv_rmse = -grid_search.best_score_
-print(f"\nBest params : {best_params}")
-print(f"Best CV RMSE: {best_cv_rmse:.4f}%  (mean across 5 folds)")
+print(f"\nBest params   : {best_params}")
+print(f"Best CV F1-wt : {grid_search.best_score_:.4f}")
 
-# ── Save full CV results table (thesis Table X) ────────────────────────────────
+# CV results table + heatmap
 cv_results = pd.DataFrame(grid_search.cv_results_)
-cv_results['mean_rmse'] = -cv_results['mean_test_score']
-cv_results['std_rmse']  =  cv_results['std_test_score']
-cv_table = (
-    cv_results[['param_n_estimators', 'param_max_depth', 'mean_rmse', 'std_rmse']]
-    .sort_values('mean_rmse')
-    .rename(columns={
-        'param_n_estimators': 'n_estimators',
-        'param_max_depth':    'max_depth',
-        'mean_rmse':          'Mean CV RMSE (%)',
-        'std_rmse':           'Std CV RMSE (%)',
-    })
-)
+cv_table = (cv_results[['param_n_estimators','param_max_depth','mean_test_score','std_test_score']]
+            .sort_values('mean_test_score', ascending=False)
+            .rename(columns={'param_n_estimators':'n_estimators','param_max_depth':'max_depth',
+                             'mean_test_score':'Mean CV F1-wt','std_test_score':'Std CV F1-wt'}))
 cv_table['n_estimators'] = cv_table['n_estimators'].astype(int)
 cv_table['max_depth']    = cv_table['max_depth'].astype(int)
-cv_csv_path = os.path.join(EVAL_DIR, "rf_cv_results.csv")
-cv_table.to_csv(cv_csv_path, index=False)
-print(f"\nFull CV results ({len(cv_table)} rows) saved to {cv_csv_path}")
+cv_table.to_csv(os.path.join(EVAL_DIR, "rf_cv_results.csv"), index=False)
 print(cv_table.head(5).to_string(index=False))
 
-# ── Heatmap: mean RMSE by n_estimators x max_depth (thesis Figure) ─────────────
-pivot = cv_results.pivot_table(
-    values='mean_rmse',
-    index='param_max_depth',
-    columns='param_n_estimators',
-)
-pivot.index   = pivot.index.astype(int)
-pivot.columns = pivot.columns.astype(int)
-
+pivot = cv_results.pivot_table(values='mean_test_score',
+                                index='param_max_depth', columns='param_n_estimators')
+pivot.index = pivot.index.astype(int); pivot.columns = pivot.columns.astype(int)
 fig, ax = plt.subplots(figsize=(8, 5))
-sns.heatmap(
-    pivot, annot=True, fmt='.3f', cmap='YlOrRd_r', ax=ax,
-    linewidths=0.5, annot_kws={'size': 10},
-)
-ax.set_title('5-Fold Cross-Validation RMSE (%) — Random Forest\nn_estimators vs max_depth  (lower = better)')
+sns.heatmap(pivot, annot=True, fmt='.3f', cmap='YlGn', ax=ax, linewidths=0.5)
+ax.set_title('5-Fold CV F1-Weighted — RF Multiclass Fault Classifier (higher = better)')
 ax.set_xlabel('n_estimators'); ax.set_ylabel('max_depth')
-# Mark the winning cell
-best_col = list(pivot.columns).index(best_params['n_estimators'])
-best_row = list(pivot.index).index(best_params['max_depth'])
-ax.add_patch(plt.Rectangle((best_col, best_row), 1, 1, fill=False,
-                             edgecolor='blue', lw=3, label='Best'))
-ax.legend(handles=[plt.Rectangle((0, 0), 1, 1, fill=False, edgecolor='blue', lw=2)],
-          labels=[f"Best: {best_params}"], loc='upper right', fontsize=9)
-plt.tight_layout()
-heatmap_path = os.path.join(IMG_DIR, "rf_cv_heatmap.png")
-plt.savefig(heatmap_path, dpi=150)
-plt.close()
-print(f"CV heatmap saved to {heatmap_path}")
+bc = list(pivot.columns).index(best_params['n_estimators'])
+br = list(pivot.index).index(best_params['max_depth'])
+ax.add_patch(plt.Rectangle((bc, br), 1, 1, fill=False, edgecolor='blue', lw=3))
+plt.tight_layout(); plt.savefig(os.path.join(IMG_DIR, "rf_cv_heatmap.png"), dpi=150); plt.close()
 
-# ── Phase 2: Final model on full training partition ────────────────────────────
-print(f"\nRefitting with best params on full {len(X_train):,}-row training set ...")
-rf = RandomForestRegressor(
-    **best_params,
-    min_samples_leaf=5,
-    n_jobs=-1,
-    random_state=42,
-)
-rf.fit(X_train, y_train)
+# Final fit on full multiclass training set
+print(f"\nRefitting on full {len(X_train_m):,}-row multiclass training set ...")
+rf = RandomForestClassifier(**best_params, class_weight='balanced', n_jobs=-1, random_state=42)
+rf.fit(X_train_m, y_train_m)
 
-# ── Evaluation on held-out test set ───────────────────────────────────────────
-y_pred = rf.predict(X_test)
-rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-mae  = mean_absolute_error(y_test, y_pred)
-mape = mean_absolute_percentage_error(y_test, y_pred)
-r2   = r2_score(y_test, y_pred)
-print(f"\nTest-set metrics (20% held-out, CV-tuned model):")
-print(f"  RMSE : {rmse:.4f}%  (Target: <5.0%)")
-print(f"  MAE  : {mae:.4f}%")
-print(f"  MAPE : {mape*100:.4f}%")
-print(f"  R2   : {r2:.4f}   (Target: >0.50)")
+# Evaluation
+y_pred_m = rf.predict(X_test_m)
+acc = accuracy_score(y_test_m, y_pred_m)
+print(f"\nOverall accuracy: {acc:.4f}")
+print("\nPer-class report:")
+print(classification_report(y_test_m, y_pred_m, zero_division=0))
 
-plt.figure(figsize=(8, 8))
-plt.scatter(y_test, y_pred, alpha=0.3, color='indigo', s=8)
-plt.plot([y.min(), y.max()], [y.min(), y.max()], 'r--', lw=2, label='Perfect Prediction')
-plt.title(f'Random Forest: Actual vs Predicted SoH\n'
-          f'Best params: n_estimators={best_params["n_estimators"]}, '
-          f'max_depth={best_params["max_depth"]}  |  R2={r2:.4f}')
-plt.xlabel('Actual SoH (%)'); plt.ylabel('Predicted SoH (%)')
-plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout()
-plt.savefig(f"{IMG_DIR}/soh_regression_scatter.png", dpi=150)
-plt.close()
+cm_rf = confusion_matrix(y_test_m, y_pred_m, labels=rf.classes_)
+fig, ax = plt.subplots(figsize=(8, 7))
+ConfusionMatrixDisplay(confusion_matrix=cm_rf, display_labels=rf.classes_).plot(
+    ax=ax, cmap='Greens', colorbar=False, xticks_rotation=20)
+ax.set_title(f'RF Multiclass Fault Classifier — Confusion Matrix  (Accuracy={acc:.3f})')
+plt.tight_layout(); plt.savefig(f"{IMG_DIR}/rf_confusion_matrix.png", dpi=150); plt.close()
 
 imp_df = pd.DataFrame({'Feature': FEATURE_COLS, 'Importance': rf.feature_importances_})
 imp_df = imp_df.sort_values('Importance', ascending=False)
-print("\nTop 5 features:")
-print(imp_df.head(5).to_string(index=False))
-
+print("Top 5 features:"); print(imp_df.head(5).to_string(index=False))
 plt.figure(figsize=(10, 6))
 sns.barplot(x='Importance', y='Feature', data=imp_df, palette='viridis')
-plt.title(f'Feature Importance (Random Forest — CV-tuned, n_est={best_params["n_estimators"]}, '
-          f'depth={best_params["max_depth"]})')
-plt.tight_layout()
-plt.savefig(f"{IMG_DIR}/feature_importance.png", dpi=150)
-plt.close()
+plt.title('Feature Importance — RF Multiclass Fault Classifier')
+plt.tight_layout(); plt.savefig(f"{IMG_DIR}/feature_importance.png", dpi=150); plt.close()
 
 joblib.dump(rf, f"{MODEL_DIR}/rf_model.pkl")
-joblib.dump({'X_test': X_test, 'y_test': y_test, 'feature_cols': FEATURE_COLS},
+joblib.dump({'X_test': X_test_m, 'y_test': y_test_m,
+             'classes': list(rf.classes_), 'feature_cols': FEATURE_COLS},
             f"{MODEL_DIR}/rf_test_split.pkl")
-print("RF model + test split saved.")
+print(f"RF multiclass classifier saved.  Classes: {list(rf.classes_)}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2. Isolation Forest — unsupervised anomaly detection
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
+# 2. Isolation Forest — unsupervised anomaly detection (first stage gate)
+# ===============================================================================
 print("\n--- Isolation Forest --------------------------------------------------")
 X_normal = X_train[y_clf_train == 0]
 print(f"Training on {len(X_normal):,} normal samples only (label=0).")
@@ -308,9 +321,10 @@ cm = confusion_matrix(y_test_if, if_preds, labels=[1, -1])
 plt.figure(figsize=(6, 5))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
             xticklabels=['Normal', 'Anomaly'], yticklabels=['Normal', 'Anomaly'])
-plt.title('Isolation Forest Confusion Matrix (new schema)')
+plt.title('Isolation Forest Confusion Matrix')
 plt.ylabel('Actual'); plt.xlabel('Predicted')
 plt.tight_layout(); plt.savefig(f"{IMG_DIR}/if_confusion_matrix.png")
+plt.close()
 
 joblib.dump(if_model, f"{MODEL_DIR}/if_model.pkl")
 print("IF model saved.")

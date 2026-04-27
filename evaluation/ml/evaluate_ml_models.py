@@ -3,23 +3,17 @@ Chapter 4 Evaluation Suite - ML Sub-package
 Script 2: evaluate_ml_models.py
 
 Loads ml_test_dataset.csv (F1/F2/F3/F5 only) and runs both trained models:
-  - Isolation Forest  -> anomaly detection metrics (Precision, Recall, F1)
-  - Random Forest     -> SoH regression metrics (RMSE, MAE, MAPE, R2)
+  - Isolation Forest        -> anomaly detection  (Precision, Recall, F1)
+  - Random Forest Classifier -> fault probability  (Accuracy, Precision, Recall, F1, AUC)
 
 Produces:
-  - ml_results_table.csv    (7 formal metrics for thesis Section 4.x)
-  - ml_threshold.json       (optimal IF decision threshold for reuse)
-  - docs/images/confusion_matrix_ml.png
+  - ml_results_table.csv        (9 formal metrics for thesis Section 4.x)
+  - ml_threshold.json           (optimal IF decision threshold for reuse)
+  - docs/images/confusion_matrix_ml.png   (IF confusion matrix)
+  - docs/images/rf_confusion_matrix.png   (RF confusion matrix)
 
 NOTE: F4 / network / PDR metrics are NOT computed here.
       See evaluation/pipeline/evaluate_pipeline.py for those.
-
-NOTE: RF SoH regression is evaluated on the held-out 20% split from
-      train_models.py (rf_test_split.pkl), not on the fault-injected
-      test dataset. Evaluating on fault rows is a category error
-      (injected batt_voltage values corrupt the SoH signal).
-      The correct scientific claim: "under normal operational conditions
-      the RF predicts SoH with RMSE < 5%."
 """
 
 import json
@@ -32,9 +26,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import (precision_score, recall_score, f1_score,
-                             confusion_matrix, mean_squared_error,
-                             r2_score, mean_absolute_error,
-                             mean_absolute_percentage_error)
+                             accuracy_score, roc_auc_score, confusion_matrix)
 
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 EVAL_DIR     = os.path.dirname(SCRIPT_DIR)
@@ -133,48 +125,58 @@ plt.close()
 print(f"\n  Saved: {cm_path}")
 
 # ================================================================================
-# METRIC BATCH 2 - Random Forest (SoH Regression)
+# METRIC BATCH 2 - Random Forest Classifier (Fault Probability)
 # ================================================================================
 print()
 print("=" * 60)
-print("  ML Metric Batch 2 - Random Forest Regressor (SoH)")
+print("  ML Metric Batch 2 - Random Forest Classifier (Fault)")
 print("=" * 60)
 
+# Evaluate on the held-out 20% stratified split saved by train_models.py.
+# This set was stratified to preserve the 10.75% fault class ratio, giving
+# reliable precision/recall estimates without class-imbalance bias.
 rf_split_path = os.path.join(MODEL_DIR, "rf_test_split.pkl")
 if os.path.exists(rf_split_path):
-    split = joblib.load(rf_split_path)
-    X_rf      = split['X_test']
-    y_rf      = split['y_test']
-    rf_source = f"held-out training split ({len(X_rf):,} rows)"
+    split    = joblib.load(rf_split_path)
+    X_rf     = split['X_test']
+    y_rf     = split['y_test']   # binary labels: 0=Normal, 1=Fault
+    rf_source = f"held-out training split ({len(X_rf):,} rows, stratified)"
 else:
     print("  [WARNING] rf_test_split.pkl not found -- re-run simulation/train_models.py.")
-    print("            Falling back to NORMAL rows from ml_test_dataset.csv.")
-    normal_df = df[df['fault_id'] == 'NORMAL']
-    X_rf      = normal_df[FEATURE_COLS]
-    y_rf      = normal_df['soh_percent']
-    rf_source = f"NORMAL rows from ml_test_dataset.csv ({len(X_rf)} rows) [FALLBACK]"
+    print("            Falling back to ml_test_dataset.csv labels.")
+    X_rf     = df[FEATURE_COLS]
+    y_rf     = df['label']
+    rf_source = f"ml_test_dataset.csv ({len(X_rf)} rows) [FALLBACK]"
 
-rf_preds = rf_model.predict(X_rf)
-rf_rmse  = np.sqrt(mean_squared_error(y_rf, rf_preds))
-rf_mae   = mean_absolute_error(y_rf, rf_preds)
-rf_mape  = mean_absolute_percentage_error(y_rf, rf_preds)
-rf_r2    = r2_score(y_rf, rf_preds)
+rf_pred       = rf_model.predict(X_rf)
+rf_pred_proba = rf_model.predict_proba(X_rf)[:, 1]   # fault probability
+
+rf_acc  = accuracy_score(y_rf,  rf_pred)
+rf_prec = precision_score(y_rf, rf_pred, zero_division=0)
+rf_rec  = recall_score(y_rf,    rf_pred, zero_division=0)
+rf_f1   = f1_score(y_rf,        rf_pred, zero_division=0)
+rf_auc  = roc_auc_score(y_rf,   rf_pred_proba)
 
 print(f"  Evaluation source : {rf_source}")
-print(f"  RMSE  : {rf_rmse:.4f}%  (Target: <5.0%)")
-print(f"  MAE   : {rf_mae:.4f}%  (Target: <5.0%)")
-print(f"  MAPE  : {rf_mape*100:.4f}%  (Target: <5.0%)")
-print(f"  R2    : {rf_r2:.4f}   (Target: >0.50)")
+print(f"  Accuracy  : {rf_acc:.4f}")
+print(f"  Precision : {rf_prec:.4f}  (Target: >0.90)")
+print(f"  Recall    : {rf_rec:.4f}")
+print(f"  F1-Score  : {rf_f1:.4f}  (Target: >0.90)")
+print(f"  ROC-AUC   : {rf_auc:.4f}")
 
-# Scatter plot
-plt.figure(figsize=(7, 7))
-plt.scatter(y_rf, rf_preds, alpha=0.2, color='indigo', s=10)
-plt.plot([y_rf.min(), y_rf.max()], [y_rf.min(), y_rf.max()], 'r--', lw=2, label='Perfect Prediction')
-plt.title(f'RF SoH Regression: Actual vs Predicted\nRMSE={rf_rmse:.3f}%  R2={rf_r2:.4f}')
-plt.xlabel('Actual SoH (%)'); plt.ylabel('Predicted SoH (%)')
-plt.legend(); plt.grid(True, alpha=0.3); plt.tight_layout()
-plt.savefig(os.path.join(DOCS_IMG_DIR, 'soh_regression_scatter.png'))
+# RF confusion matrix
+cm_rf = confusion_matrix(y_rf, rf_pred)
+fig, ax = plt.subplots(figsize=(6, 5))
+sns.heatmap(cm_rf, annot=True, fmt='d', cmap='Greens', ax=ax,
+            xticklabels=['Predicted Normal', 'Predicted Fault'],
+            yticklabels=['Actual Normal',    'Actual Fault'])
+ax.set_title(f'Random Forest Classifier - Confusion Matrix\n'
+             f'F1={rf_f1:.3f}  AUC={rf_auc:.3f}')
+plt.tight_layout()
+rf_cm_path = os.path.join(DOCS_IMG_DIR, 'rf_confusion_matrix.png')
+plt.savefig(rf_cm_path)
 plt.close()
+print(f"\n  Saved: {rf_cm_path}")
 
 # ================================================================================
 # EXPORT formal results table
@@ -182,11 +184,12 @@ plt.close()
 out_csv = os.path.join(EVAL_DIR, "ml_results_table.csv")
 pd.DataFrame({
     "Metric":         ["IF Precision", "IF Recall", "IF F1-Score",
-                       "RF RMSE (%)", "RF MAE (%)", "RF MAPE (%)", "RF R2"],
+                       "RF Accuracy", "RF Precision", "RF Recall", "RF F1-Score", "RF ROC-AUC"],
     "Value":          [f"{precision_if:.4f}", f"{recall_if:.4f}", f"{f1_if:.4f}",
-                       f"{rf_rmse:.4f}", f"{rf_mae:.4f}", f"{rf_mape*100:.4f}", f"{rf_r2:.4f}"],
+                       f"{rf_acc:.4f}", f"{rf_prec:.4f}", f"{rf_rec:.4f}",
+                       f"{rf_f1:.4f}", f"{rf_auc:.4f}"],
     "Target Promise": [">0.90", "N/A", ">0.90",
-                       "<5.0",  "<5.0", "<5.0",  ">0.50"],
+                       ">0.90", ">0.90", "N/A", ">0.90", ">0.90"],
 }).to_csv(out_csv, index=False)
 
 print()

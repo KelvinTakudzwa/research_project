@@ -54,12 +54,4 @@ const getRecentReadings = (limit = 100) => {
     });
 };
 
-const getLastTimestamp = () => new Promise((resolve, reject) => {
-    const sql = 'SELECT MAX(timestamp_utc) AS last_ts FROM telemetry_data';
-    getDb().query(sql, (err, results) => {
-        if (err) return reject(err);
-        resolve(results[0]?.last_ts || null);
-    });
-});
-
-module.exports = { insertTelemetry, getRecentReadings, getLastTimestamp };
+module.exports = { insertTelemetry, getRecentReadings };

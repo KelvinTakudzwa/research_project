@@ -141,25 +141,10 @@ try:
         current_row = daylight_rows[row_idx % len(daylight_rows)]
         row_idx += 1
 
-        # ── B1: Temporal integrity — today's date + CSV time-of-day ─────────────
-        # Rules:
-        #   1. Use the CSV row's HH:MM:SS so irradiance peaks align with noon
-        #      (diurnal cycle integrity preserved).
-        #   2. Use today's UTC date so every inserted row falls within the
-        #      retrainer's DATE_SUB(NOW(), INTERVAL 30 DAY) window.
-        # Using the raw CSV date (April 2025) would exclude all simulation data
-        # from retraining because it is outside the 30-day rolling window.
-        row_ts = current_row.get('timestamp', '')
-        try:
-            csv_dt  = datetime.fromisoformat(row_ts)
-            now_utc = datetime.utcnow()
-            combined = now_utc.replace(
-                hour=csv_dt.hour, minute=csv_dt.minute,
-                second=csv_dt.second, microsecond=0
-            )
-            iso_timestamp = combined.strftime('%Y-%m-%dT%H:%M:%SZ')
-        except (ValueError, TypeError):
-            iso_timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        # Timestamp: plain current UTC time.
+        # The DB uses NOW() for all inserts so this value is display-only
+        # (frontend chart X-axis). No timezone conversion happens in the pipeline.
+        iso_timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 
         # ── B2 + B3: Field renames + irradiance unit conversion ───────────────
         pv_voltage_v      = round(float(current_row['pv_voltage']),    2)
@@ -195,9 +180,12 @@ try:
             fault_cycle = int((fault_counter / 30) % 4)
 
             if fault_cycle == 1:
-                # F1: Partial Shading — PV generation collapses
-                pv_current_a   = round(0.9 + random.uniform(-0.1, 0.1), 2)
-                irradiance_wm2 = round(irradiance_wm2 * 0.25, 2)
+                # F1: Partial Shading — PV current collapses while irradiance stays HIGH.
+                # This is the defining physics violation: sun is shining on the panel
+                # but shaded cells block current flow. Do NOT reduce irradiance —
+                # the high irr + near-zero current mismatch is exactly what the IF
+                # flags and what the RF was trained to recognise as F1.
+                pv_current_a      = round(0.9 + random.uniform(-0.1, 0.1), 2)
                 battery_current_a = round(pv_current_a - load_current, 2)
                 fault_name = 'F1 Partial Shading'
 

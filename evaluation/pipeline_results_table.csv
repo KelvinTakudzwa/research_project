@@ -1,6 +1,6 @@
 Metric,Value,Target Promise
 PDR (%),100.0,100%
-Mean E2E Latency (ms),995.67,"<30,000 ms"
-Latency Jitter (ms),1819.74,N/A
+Mean E2E Latency (ms),995.61,"<30,000 ms"
+Latency Jitter (ms),1819.65,N/A
 Store-and-Forward Recovery (%),100.0,100%
 Test Mode,LIVE,LIVE preferred
