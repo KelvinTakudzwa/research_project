@@ -166,12 +166,21 @@ N_FAULT  = 12_500
 n_idx  = rng.choice(np.where(y_clf == 0)[0], N_NORMAL, replace=False)
 X_norm = X.iloc[n_idx].copy(); y_norm = np.full(N_NORMAL, 'Normal')
 
-# F1 Partial Shading — irradiance stays high but PV current collapses
+# F1 Partial Shading — irradiance stays high but PV current collapses.
+# Battery switches from charging to discharging because pv_current < load_current.
+# battery_current_norm and battery_power_norm must be recomputed to match the
+# simulator's physics: battery_current = pv_current - load_current (discharging → negative).
 f1_idx = rng.choice(np.where(y_clf == 0)[0], N_FAULT, replace=False)
 X_f1   = X.iloc[f1_idx].copy()
-X_f1['pv_current_norm'] = rng.uniform(0.0, 0.06, N_FAULT)
-X_f1['pv_power_norm']   = X_f1['pv_voltage_norm'] * X_f1['pv_current_norm']
-X_f1['net_flux_norm']   = X_f1['pv_power_norm'] - X_f1['ac_power_norm']
+X_f1['pv_current_norm']      = rng.uniform(0.01, 0.04, N_FAULT)  # 0.3A ±0.05 @ 16.67A max
+X_f1['pv_power_norm']        = X_f1['pv_voltage_norm'] * X_f1['pv_current_norm']
+# DC load approximation: ac_power / (batt_voltage * inverter_eff), normalised by MAX_BATT_I
+dc_load_norm                 = (X_f1['ac_power_norm'] * MAX_AC_P) / (
+                                    np.clip(X_f1['battery_voltage_norm'], 0.01, None)
+                                    * MAX_BATT_V * INVERTER_EFF * MAX_BATT_I)
+X_f1['battery_current_norm'] = np.clip(X_f1['pv_current_norm'] - dc_load_norm, -1.5, 1.5)
+X_f1['battery_power_norm']   = X_f1['battery_voltage_norm'] * X_f1['battery_current_norm']
+X_f1['net_flux_norm']        = X_f1['pv_power_norm'] - X_f1['ac_power_norm']
 y_f1 = np.full(N_FAULT, 'F1_Partial_Shading')
 
 # F2 Inverter Overload — AC load spikes, battery temp rises, voltage sags
@@ -306,8 +315,14 @@ print("\n--- Isolation Forest --------------------------------------------------
 X_normal = X_train[y_clf_train == 0]
 print(f"Training on {len(X_normal):,} normal samples only (label=0).")
 
-contamination = round(float(y_clf_train.mean()), 4)
-print(f"Empirical contamination rate: {contamination:.4f}")
+# Contamination = expected fraction of live normal readings that are marginal/noisy.
+# We previously used y_clf_train.mean() (~0.1075) — the anomaly fraction of the
+# FULL CSV — but the IF is fitted on normal-only rows. Telling it "10.75% of your
+# all-normal training data are outliers" causes it to flag ~10% of every live
+# normal reading as anomalous (high false-positive rate).
+# 0.04 (4%) is a realistic operational noise floor for clean sensor data.
+contamination = 0.04
+print(f"Contamination: {contamination} (fixed operational noise floor)")
 
 if_model = IsolationForest(contamination=contamination, random_state=42, n_jobs=-1)
 if_model.fit(X_normal)

@@ -2,8 +2,9 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SolarDataProvider } from './context/SolarDataContext';
 import ProtectedRoute from './components/common/ProtectedRoute';
-import DashboardPage from './pages/DashboardPage';
-import LoginPage     from './pages/LoginPage';
+import DashboardPage  from './pages/DashboardPage';
+import FaultLogsPage  from './pages/FaultLogsPage';
+import LoginPage      from './pages/LoginPage';
 
 function App() {
     return (
@@ -16,6 +17,16 @@ function App() {
                         <ProtectedRoute>
                             <SolarDataProvider>
                                 <DashboardPage />
+                            </SolarDataProvider>
+                        </ProtectedRoute>
+                    }
+                />
+                <Route
+                    path="/faults"
+                    element={
+                        <ProtectedRoute>
+                            <SolarDataProvider>
+                                <FaultLogsPage />
                             </SolarDataProvider>
                         </ProtectedRoute>
                     }

@@ -3,7 +3,7 @@ import DashboardLayout from '../layouts/DashboardLayout';
 import KpiGrid         from '../components/dashboard/KpiGrid';
 import AcTelemetryBar  from '../components/dashboard/AcTelemetryBar';
 import MainChart       from '../components/dashboard/MainChart';
-import AlertFeed       from '../components/dashboard/AlertFeed';
+import FaultSummaryPanel from '../components/dashboard/FaultSummaryPanel';
 import MlControl       from '../components/dashboard/MlControl';
 import SystemHealthMonitor from '../components/dashboard/SystemHealthMonitor';
 
@@ -30,7 +30,7 @@ const DashboardPage = () => {
                         <MainChart />
                     </div>
                     <div className="lg:col-span-1 h-[420px]">
-                        <AlertFeed />
+                        <FaultSummaryPanel />
                     </div>
                 </div>
 

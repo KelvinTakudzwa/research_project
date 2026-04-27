@@ -15,12 +15,14 @@ const SystemHealthMonitor = () => {
 
     const { pred_label, soh_percent, anomaly_score } = latest;
 
-    // Derived State
-    const isNormal = pred_label === 'Normal';
-    const isWarning = pred_label === 'Unknown_Anomaly';
-    const isCritical = pred_label === 'Known_Fault_Degradation' || pred_label === 'Known_Fault' || pred_label === 'Error' || pred_label?.includes('F');
+    // Derived State — label space: Normal | F1_Partial_Shading | F2_Inverter_Overload |
+    //   F3_Deep_Discharge | F5_Sensor_Dead | Uncertain_Anomaly
+    const isNormal   = pred_label === 'Normal';
+    const isWarning  = pred_label === 'Uncertain_Anomaly';
+    const isCritical = !isNormal && !isWarning;
 
-    const statusText = isNormal ? 'HEALTHY STATE' : isCritical ? 'CRITICAL FAULT' : 'WARNING STATE';
+    const faultDisplay = pred_label?.replace(/_/g, ' ') || 'FAULT';
+    const statusText = isNormal ? 'HEALTHY STATE' : isCritical ? faultDisplay.toUpperCase() : 'UNCERTAIN ANOMALY';
     const statusColor = isNormal ? 'text-emerald-400' : isCritical ? 'text-rose-500' : 'text-amber-400';
     const bgGlow = isNormal ? 'shadow-[0_0_30px_rgba(52,211,153,0.05)]' : isCritical ? 'shadow-[0_0_30px_rgba(244,63,94,0.1)]' : 'shadow-[0_0_30px_rgba(251,191,36,0.05)]';
 

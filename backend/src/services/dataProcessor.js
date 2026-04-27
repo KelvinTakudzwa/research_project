@@ -110,7 +110,7 @@ const processSensorData = async (rawArray) => {
             const telemetryId = await insertTelemetry(dbRecord, 'NOW()');
 
             // Step 2: INSERT inference
-            const inferenceId = await insertInference(telemetryId, sohPercent, anomalyScore, predLabel);
+            const inferenceId = await insertInference(telemetryId, sohPercent, anomalyScore, predLabel, confidence);
 
             // Step 3: WebSocket push with display timestamp for frontend chart
             socketBroadcaster.broadcastTelemetry({
@@ -148,7 +148,8 @@ const processSensorData = async (rawArray) => {
             }
 
             // Step 5b: Chemistry-aware deep discharge guard
-            if (battery_voltage_v < BOUNDS.socBounds.deepDischargeV) {
+            // Skip if RF already classified F3 to avoid duplicate alerts for the same event.
+            if (battery_voltage_v < BOUNDS.socBounds.deepDischargeV && predLabel !== 'F3_Deep_Discharge') {
                 await insertAlert(inferenceId, 'Deep Discharge (Battery Protection)', 'Critical', 'NOW()');
                 socketBroadcaster.broadcastAlert({
                     alert_type: 'Deep Discharge (Battery Protection)', alert_severity: 'Critical',
@@ -158,6 +159,46 @@ const processSensorData = async (rawArray) => {
                     `[Alert] CRITICAL — Deep Discharge: ` +
                     `${battery_voltage_v.toFixed(2)}V < ${BOUNDS.socBounds.deepDischargeV}V`
                 );
+            }
+
+            // Step 5c: F7 — Poor Power Factor (grid-loading fault)
+            if (ac_power_factor < 0.75 && ac_power_w > 10) {
+                const f7Severity = ac_power_factor < 0.60 ? 'Critical' : 'Warning';
+                await insertAlert(inferenceId, 'F7 Poor Power Factor', f7Severity, 'NOW()');
+                socketBroadcaster.broadcastAlert({
+                    alert_type: 'F7 Poor Power Factor', alert_severity: f7Severity,
+                    soc_percent, battery_voltage_v, anomaly_score: null, timestamp: displayTimestamp,
+                });
+                console.log(`[Alert] ${f7Severity} — F7 Poor Power Factor (PF=${ac_power_factor.toFixed(3)})`);
+            }
+
+            // Step 5d: F9 — Overcharge (voltage above bulk charge ceiling = genuine overcharge)
+            // Uses battVoltage.max (= vBulk) — the chemistry-derived normalization ceiling.
+            // vMax * 1.05 was wrong for lead-acid: 12.69 * 1.05 = 13.32V fires on normal 14V charging.
+            if (battery_voltage_v > BOUNDS.battVoltage.max) {
+                await insertAlert(inferenceId, 'F9 Battery Overcharge', 'Critical', 'NOW()');
+                socketBroadcaster.broadcastAlert({
+                    alert_type: 'F9 Battery Overcharge', alert_severity: 'Critical',
+                    soc_percent, battery_voltage_v, anomaly_score: null, timestamp: displayTimestamp,
+                });
+                console.log(`[Alert] CRITICAL — F9 Overcharge: ${battery_voltage_v.toFixed(2)}V > ${(BOUNDS.socBounds.vMax * 1.05).toFixed(2)}V`);
+            }
+
+            // Step 5e: F10 — Absolute battery over-temperature
+            if (battery_temp_c > 55) {
+                await insertAlert(inferenceId, 'F10 Battery Over-Temperature', 'Critical', 'NOW()');
+                socketBroadcaster.broadcastAlert({
+                    alert_type: 'F10 Battery Over-Temperature', alert_severity: 'Critical',
+                    soc_percent, battery_voltage_v, anomaly_score: null, timestamp: displayTimestamp,
+                });
+                console.log(`[Alert] CRITICAL — F10 Over-Temperature: ${battery_temp_c.toFixed(1)}°C`);
+            } else if (battery_temp_c > 45) {
+                await insertAlert(inferenceId, 'F10 Battery Over-Temperature', 'Warning', 'NOW()');
+                socketBroadcaster.broadcastAlert({
+                    alert_type: 'F10 Battery Over-Temperature', alert_severity: 'Warning',
+                    soc_percent, battery_voltage_v, anomaly_score: null, timestamp: displayTimestamp,
+                });
+                console.log(`[Alert] WARNING — F10 Elevated Temperature: ${battery_temp_c.toFixed(1)}°C`);
             }
         } catch (dbErr) {
             console.error('[Pipeline] Database insertion error:', dbErr);

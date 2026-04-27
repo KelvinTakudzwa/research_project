@@ -149,7 +149,8 @@ def generate_block(fault_id: str, start_time: datetime, duration_mins: int = 48)
 
         if fault_id == "F1" and in_fault_window:
             # Partial Shading: irradiance stays high but PV current collapses.
-            pv_i  = 0.9 + random.uniform(-0.1, 0.1)
+            # 0.3A → norm ≈ 0.018 — matches training range [0.01, 0.04] and simulator.
+            pv_i  = 0.3 + random.uniform(-0.05, 0.05)
             label = 1
 
         elif fault_id == "F2" and in_fault_window:

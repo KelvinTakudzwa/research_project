@@ -54,9 +54,10 @@ CREATE TABLE IF NOT EXISTS telemetry_data (
 CREATE TABLE IF NOT EXISTS inference_results (
     inference_id    INT AUTO_INCREMENT PRIMARY KEY,
     telemetry_id    INT NOT NULL,
-    soh_percent     FLOAT          COMMENT 'Random Forest SoH Output (0–100)',
-    anomaly_score   FLOAT          COMMENT 'Isolation Forest decision score',
-    pred_label      VARCHAR(30) DEFAULT 'Normal' COMMENT 'Normal | Unknown_Anomaly | Known_Fault_Degradation',
+    soh_percent     FLOAT          COMMENT 'P(Normal)×100 — health score from RF (0–100)',
+    anomaly_score   FLOAT          COMMENT 'Isolation Forest decision score (negative = more anomalous)',
+    pred_label      VARCHAR(30) DEFAULT 'Normal' COMMENT 'Normal | F1_Partial_Shading | F2_Inverter_Overload | F3_Deep_Discharge | F5_Sensor_Dead | Uncertain_Anomaly',
+    confidence      FLOAT          COMMENT 'RF class probability for specific faults; IF-derived severity [0–1] for Uncertain_Anomaly',
     FOREIGN KEY (telemetry_id) REFERENCES telemetry_data(telemetry_id) ON DELETE CASCADE
 );
 

@@ -9,6 +9,7 @@ router.post('/data', apiController.postData);
 // All remaining routes require a valid dashboard JWT
 router.get('/readings',        authMiddleware, apiController.getReadings);
 router.get('/alerts',          authMiddleware, apiController.getAlerts);
+router.get('/alerts/log',      authMiddleware, apiController.getFaultLogHandler);
 router.get('/calibration_log', authMiddleware, apiController.getCalibrationLog);
 router.post('/trigger_retraining', authMiddleware, apiController.triggerRetrain);
 

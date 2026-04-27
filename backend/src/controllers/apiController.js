@@ -1,5 +1,5 @@
 const { getRecentReadings } = require('../models/telemetryModel');
-const { getRecentAlerts } = require('../models/alertModel');
+const { getRecentAlerts, getFaultLog } = require('../models/alertModel');
 const { processSensorData } = require('../services/dataProcessor');
 const { getServiceToken } = require('../services/serviceAuth');
 
@@ -60,10 +60,23 @@ const triggerRetrain = async (req, res) => {
     }
 };
 
+// GET /api/alerts/log?limit=200&severity=Critical
+const getFaultLogHandler = async (req, res) => {
+    const limit    = Math.min(parseInt(req.query.limit, 10) || 200, 500);
+    const severity = req.query.severity || null;
+    try {
+        const results = await getFaultLog(limit, severity);
+        res.json(results);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
 module.exports = {
     getReadings,
     getAlerts,
     postData,
     getCalibrationLog,
-    triggerRetrain
+    triggerRetrain,
+    getFaultLogHandler,
 };

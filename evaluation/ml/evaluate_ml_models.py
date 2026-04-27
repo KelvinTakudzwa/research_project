@@ -26,7 +26,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import (precision_score, recall_score, f1_score,
-                             accuracy_score, roc_auc_score, confusion_matrix)
+                             accuracy_score, roc_auc_score, confusion_matrix,
+                             classification_report, ConfusionMatrixDisplay)
+from sklearn.preprocessing import LabelEncoder
 
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 EVAL_DIR     = os.path.dirname(SCRIPT_DIR)
@@ -125,58 +127,85 @@ plt.close()
 print(f"\n  Saved: {cm_path}")
 
 # ================================================================================
-# METRIC BATCH 2 - Random Forest Classifier (Fault Probability)
+# METRIC BATCH 2 - Random Forest Multiclass Classifier
+# Uses ml_test_dataset.csv with fault_id (F1/F2/F3/F5/NORMAL) as ground truth.
+# RF was retrained as a 5-class classifier — binary rf_test_split.pkl is stale.
 # ================================================================================
 print()
 print("=" * 60)
-print("  ML Metric Batch 2 - Random Forest Classifier (Fault)")
+print("  ML Metric Batch 2 - Random Forest Classifier (Multiclass)")
 print("=" * 60)
 
-# Evaluate on the held-out 20% stratified split saved by train_models.py.
-# This set was stratified to preserve the 10.75% fault class ratio, giving
-# reliable precision/recall estimates without class-imbalance bias.
-rf_split_path = os.path.join(MODEL_DIR, "rf_test_split.pkl")
-if os.path.exists(rf_split_path):
-    split    = joblib.load(rf_split_path)
-    X_rf     = split['X_test']
-    y_rf     = split['y_test']   # binary labels: 0=Normal, 1=Fault
-    rf_source = f"held-out training split ({len(X_rf):,} rows, stratified)"
-else:
-    print("  [WARNING] rf_test_split.pkl not found -- re-run simulation/train_models.py.")
-    print("            Falling back to ml_test_dataset.csv labels.")
-    X_rf     = df[FEATURE_COLS]
-    y_rf     = df['label']
-    rf_source = f"ml_test_dataset.csv ({len(X_rf)} rows) [FALLBACK]"
+# Ground truth: only rows where label=1 are actual fault rows.
+# Pre/post-fault rows in each block have label=0 (Normal features) even though
+# fault_id names the block — the RF correctly classifies them as Normal.
+FAULT_ID_MAP = {
+    'F1': 'F1_Partial_Shading',
+    'F2': 'F2_Inverter_Overload',
+    'F3': 'F3_Deep_Discharge',
+    'F5': 'F5_Sensor_Dead',
+}
+X_rf     = df[FEATURE_COLS]
+y_rf     = df.apply(
+    lambda r: FAULT_ID_MAP[r['fault_id']] if r['label'] == 1 else 'Normal', axis=1
+)
+rf_source = f"ml_test_dataset.csv ({len(X_rf)} rows, 5-class, label-aware)"
 
-rf_pred       = rf_model.predict(X_rf)
-rf_pred_proba = rf_model.predict_proba(X_rf)[:, 1]   # fault probability
+rf_pred      = rf_model.predict(X_rf)
+rf_pred_prob = rf_model.predict_proba(X_rf)        # shape (n, 5)
+class_names  = list(rf_model.classes_)
 
-rf_acc  = accuracy_score(y_rf,  rf_pred)
-rf_prec = precision_score(y_rf, rf_pred, zero_division=0)
-rf_rec  = recall_score(y_rf,    rf_pred, zero_division=0)
-rf_f1   = f1_score(y_rf,        rf_pred, zero_division=0)
-rf_auc  = roc_auc_score(y_rf,   rf_pred_proba)
+rf_acc  = accuracy_score(y_rf, rf_pred)
+rf_prec = precision_score(y_rf, rf_pred, average='weighted', zero_division=0)
+rf_rec  = recall_score(y_rf,   rf_pred, average='weighted', zero_division=0)
+rf_f1   = f1_score(y_rf,       rf_pred, average='weighted', zero_division=0)
+
+# Weighted OVR AUC for multiclass
+le        = LabelEncoder().fit(class_names)
+y_rf_enc  = le.transform(y_rf)
+rf_auc    = roc_auc_score(y_rf_enc, rf_pred_prob, multi_class='ovr', average='weighted')
 
 print(f"  Evaluation source : {rf_source}")
-print(f"  Accuracy  : {rf_acc:.4f}")
-print(f"  Precision : {rf_prec:.4f}  (Target: >0.90)")
-print(f"  Recall    : {rf_rec:.4f}")
-print(f"  F1-Score  : {rf_f1:.4f}  (Target: >0.90)")
-print(f"  ROC-AUC   : {rf_auc:.4f}")
+print(f"  Accuracy          : {rf_acc:.4f}")
+print(f"  Precision (wtd)   : {rf_prec:.4f}  (Target: >0.90)")
+print(f"  Recall    (wtd)   : {rf_rec:.4f}")
+print(f"  F1-Score  (wtd)   : {rf_f1:.4f}  (Target: >0.90)")
+print(f"  ROC-AUC (OVR wtd) : {rf_auc:.4f}")
+print()
+print("  Per-class report:")
+print(classification_report(y_rf, rf_pred, target_names=class_names, zero_division=0))
 
-# RF confusion matrix
-cm_rf = confusion_matrix(y_rf, rf_pred)
-fig, ax = plt.subplots(figsize=(6, 5))
+# Per-class CV results heatmap (feature importance)
+fi_path = os.path.join(EVAL_DIR, "rf_cv_results.csv")
+if os.path.exists(fi_path):
+    cv_df = pd.read_csv(fi_path)
+    if {'n_estimators', 'max_depth', 'Mean CV F1-wt'}.issubset(cv_df.columns):
+        try:
+            pivot = cv_df.pivot(index='max_depth', columns='n_estimators', values='Mean CV F1-wt')
+            fig, ax = plt.subplots(figsize=(7, 4))
+            sns.heatmap(pivot, annot=True, fmt='.4f', cmap='YlGn', ax=ax, vmin=0.95, vmax=1.0)
+            ax.set_title('5-Fold CV F1-Weighted — RF Multiclass GridSearchCV')
+            plt.tight_layout()
+            plt.savefig(os.path.join(DOCS_IMG_DIR, 'rf_cv_heatmap.png'))
+            plt.close()
+        except Exception:
+            pass
+
+# Multiclass confusion matrix
+cm_rf      = confusion_matrix(y_rf, rf_pred, labels=class_names)
+short_names = ['F1\nShading', 'F2\nOverload', 'F3\nDischarge', 'F5\nSensor', 'Normal']
+fig, ax    = plt.subplots(figsize=(8, 6))
 sns.heatmap(cm_rf, annot=True, fmt='d', cmap='Greens', ax=ax,
-            xticklabels=['Predicted Normal', 'Predicted Fault'],
-            yticklabels=['Actual Normal',    'Actual Fault'])
-ax.set_title(f'Random Forest Classifier - Confusion Matrix\n'
-             f'F1={rf_f1:.3f}  AUC={rf_auc:.3f}')
+            xticklabels=short_names, yticklabels=short_names)
+ax.set_xlabel('Predicted')
+ax.set_ylabel('Actual')
+ax.set_title(f'Random Forest — 5-Class Confusion Matrix\n'
+             f'Accuracy={rf_acc:.4f}  F1-wt={rf_f1:.4f}  AUC={rf_auc:.4f}')
 plt.tight_layout()
 rf_cm_path = os.path.join(DOCS_IMG_DIR, 'rf_confusion_matrix.png')
 plt.savefig(rf_cm_path)
 plt.close()
-print(f"\n  Saved: {rf_cm_path}")
+print(f"  Saved: {rf_cm_path}")
 
 # ================================================================================
 # EXPORT formal results table
@@ -184,7 +213,8 @@ print(f"\n  Saved: {rf_cm_path}")
 out_csv = os.path.join(EVAL_DIR, "ml_results_table.csv")
 pd.DataFrame({
     "Metric":         ["IF Precision", "IF Recall", "IF F1-Score",
-                       "RF Accuracy", "RF Precision", "RF Recall", "RF F1-Score", "RF ROC-AUC"],
+                       "RF Accuracy", "RF Precision (weighted)", "RF Recall (weighted)",
+                       "RF F1-Score (weighted)", "RF ROC-AUC (OVR weighted)"],
     "Value":          [f"{precision_if:.4f}", f"{recall_if:.4f}", f"{f1_if:.4f}",
                        f"{rf_acc:.4f}", f"{rf_prec:.4f}", f"{rf_rec:.4f}",
                        f"{rf_f1:.4f}", f"{rf_auc:.4f}"],
