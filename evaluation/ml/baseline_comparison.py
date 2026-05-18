@@ -65,34 +65,54 @@ if missing:
 # ── 2. Static Threshold Baseline (Nassar et al., 2024) ───────────────────────
 def static_threshold_detect(row) -> int:
     """
-    Hard-coded physical limits typical in non-AI rule-based monitoring.
-    Rules expressed in the new schema units:
-      - battery_voltage_v (V)
-      - ac_power_w        (W)
-      - irradiance_wm2    (W/m2)
-      - pv_current_a      (A)
-      - ambient_temp_c    (degC)
+    Static threshold rules representing the Nassar et al. (2024) approach,
+    adapted to this system's physical units. Each rule reflects a single-variable
+    or two-variable engineering heuristic typical of non-AI monitoring systems.
 
-    Weakness analysis (proves IF superiority):
-    - F1 (Shading): threshold only triggers if irradiance > 667 W/m2 AND
-      pv_current_a < 0.5A. Our F1 generator sets pv_current_a = 0.9A -> MISSED.
-    - F5 (Sensor Dead): requires ambient_temp_c < 0 as additional gate, which
-      never occurs in the Zimbabwe climate dataset -> MISSED.
+    Calibration notes (why each threshold was chosen):
+    - F2 (Overload)  : 60 W = 20% of rated inverter capacity (300 W). Standard
+                       load-factor heuristic. Fails here because this system's
+                       actual operating load (7-12 W) means even a 2.5x surge
+                       only reaches ~29 W — below the threshold. The heuristic
+                       is not wrong; the system's operating point is not known
+                       to the threshold rule without site-specific data.
+    - F3 (Discharge) : 11.5 V is a widely-used lead-acid low-voltage alarm.
+                       Reliable because the fault pushes voltage to ~10.3 V.
+    - F1 (Shading)   : Irradiance > 667 W/m2 (two-thirds peak) gates for
+                       clear-sky conditions; pv_current < 0.5 A flags the
+                       collapse. Catches F1 because the simulated fault forces
+                       current to 0.3 A.
+    - F5 (Sensor Dead): Three-way cross-check — irradiance > 200 W/m2 confirms
+                        the sun is shining; pv_voltage > 15 V confirms the panel
+                        is responding (PV open-circuit voltage stays near 18–21 V
+                        even at moderate irradiance; dropping below 15 V implies
+                        night-time or a panel fault, not sensor blanking);
+                        pv_current < 0.1 A flags the current sensor as dead.
+                        All three together are unambiguous: external light is
+                        present, the panel is active, but the current measurement
+                        has failed. No temperature gate; sub-zero conditions do
+                        not occur in the deployment climate.
     """
-    # F2 proxy - Overload: AC power exceeds 2x rated system load (>60W for 300W inverter at 20%)
-    if row['ac_power_w'] > 60.0:
+    # F2 proxy — Overload (2× the 95th-percentile of observed normal AC load,
+    # ~25 W for this 12 V / 220 V system). Conservative system-aware heuristic:
+    # double the measured high-water mark, giving a 2× safety margin before
+    # flagging. Rated-capacity rules (e.g. 20% of 300 W = 60 W) are unsuitable
+    # when the system operates far below its rated ceiling.
+    if row['ac_power_w'] > 25.0:
         return 1
-    # F3 proxy - Deep Discharge
+    # F3 proxy — Deep Discharge (lead-acid low-voltage alarm)
     if row['battery_voltage_v'] < 11.5:
         return 1
-    # F1 proxy - too strict threshold on irradiance; misses F1 as designed
+    # F1 proxy — Partial Shading (clear-sky + current collapse)
     if row['irradiance_wm2'] > 667 and row['pv_current_a'] < 0.5:
         return 1
-    # F5 proxy - impossible gate (ambient_temp_c rarely < 0 in Zimbabwe climate)
-    if (row['irradiance_wm2'] > 83
-            and row['pv_current_a'] == 0.0
-            and row['ac_power_w'] == 0.0
-            and row['ambient_temp_c'] < 0):
+    # F5 proxy — Sensor Blanking (three-way cross-check)
+    # irradiance > 200 W/m2 : sun is shining
+    # pv_voltage > 15 V     : panel is responding (VOC stays high even at low irradiance)
+    # pv_current < 0.1 A    : current sensor reads near-zero (dead sensor, not a cloudy day)
+    if (row['irradiance_wm2'] > 200
+            and row['pv_voltage_v'] > 15.0
+            and row['pv_current_a'] < 0.1):
         return 1
     return 0
 

@@ -28,6 +28,10 @@ from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
+# Seed for reproducible dataset — locks in Chapter 5 results across runs.
+random.seed(42)
+np.random.seed(42)
+
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 EVAL_DIR   = os.path.dirname(OUTPUT_DIR)
 CSV_PATH   = os.path.join(OUTPUT_DIR, "..", "..", "ml_engine", "solar_data_365days.csv")

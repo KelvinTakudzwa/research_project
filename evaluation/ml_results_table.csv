@@ -1,7 +1,7 @@
 Metric,Value,Target Promise
-IF Precision,0.8485,>0.90
+IF Precision,0.7706,>0.90
 IF Recall,1.0000,N/A
-IF F1-Score,0.9180,>0.90
+IF F1-Score,0.8705,>0.90
 RF Accuracy,1.0000,>0.90
 RF Precision (weighted),1.0000,>0.90
 RF Recall (weighted),1.0000,N/A

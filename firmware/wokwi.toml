@@ -1,0 +1,11 @@
+[wokwi]
+version = 1
+
+# PlatformIO build output — run: pio run -e esp32_main
+# (inside firmware/esp32_main/ directory)
+elf      = "esp32_main/.pio/build/esp32_main/firmware.elf"
+firmware = "esp32_main/.pio/build/esp32_main/firmware.bin"
+
+# NOTE: PZEM_ENABLED=0 is set via build_flags in platformio.ini.
+# All core sensors (DS18B20, BH1750, DS3231 RTC, voltage dividers,
+# ACS712 current sensors, LCD1602) are fully wired in diagram.json.

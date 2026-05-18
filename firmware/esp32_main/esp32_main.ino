@@ -1,5 +1,5 @@
 // ============================================================
-// ESP32 Solar Mini-Grid IoT Node Firmware
+// ESP32 Solar Diagnostics System — IoT Node Firmware
 // Sensor Contract v3.0 — MQTTS (TLS 1.2) + Full Hardware Reads
 //
 // Required libraries (install via Arduino Library Manager):
@@ -9,11 +9,12 @@
 //   - "BH1750"           by Christopher Laws  (I2C light sensor)
 //   - "PZEM-004T-10A"    by ByPowerLabs       (AC power meter, v3.0)
 //   - "DallasTemperature" + "OneWire"          (DS18B20 probe)
+//   - "LiquidCrystal I2C" by Frank de Brabander (LCD1602 display)
 //
 // ── PZEM-004T AVAILABILITY FLAG ─────────────────────────────
 // Set to false if you do not yet have the PZEM-004T module.
 // AC fields will publish as 0.0 until the hardware is connected.
-#define PZEM_ENABLED true
+#define PZEM_ENABLED false
 // ────────────────────────────────────────────────────────────
 
 #include <WiFi.h>
@@ -27,6 +28,7 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <BH1750.h>
+#include <LiquidCrystal_I2C.h>
 #if PZEM_ENABLED
   #include <PZEM004Tv30.h>
 #endif
@@ -137,6 +139,8 @@ const long    DARK_DURATION_MS   = 300000;  // 5 minutes of pitch black
 OneWire        oneWire(ONE_WIRE_BUS);
 DallasTemperature ds18b20(&oneWire);
 BH1750         bh1750;
+LiquidCrystal_I2C lcd(0x27, 16, 2);   // PCF8574 backpack, 16 cols × 2 rows
+int            lcdPage = 0;            // Cycles: 0=PV, 1=Battery, 2=Env
 #if PZEM_ENABLED
   PZEM004Tv30  pzem(Serial2, 16, 17);  // RX=16, TX=17
 #endif
@@ -444,6 +448,15 @@ void setup() {
   ds18b20.begin();
   Serial.println("[DS18B20] Temperature probe initialized on GPIO 4.");
 
+  // LCD1602 I2C display (PCF8574 @ 0x27, shared I2C bus with BH1750 + DS3231)
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print(" Solar Diag Sys ");
+  lcd.setCursor(0, 1);
+  lcd.print(" Initialising... ");
+  Serial.println("[LCD] Display initialized.");
+
   // PZEM-004T AC power meter (UART2: RX=16, TX=17)
   #if PZEM_ENABLED
     Serial2.begin(9600, SERIAL_8N1, 16, 17);
@@ -466,6 +479,41 @@ void setup() {
   connectWiFi();
   syncNTP();
   connectMQTT();
+}
+
+// ============================================================
+// LCD UPDATE HELPER — called every loop, before WiFi/MQTT block
+// so the display refreshes even when the broker is unreachable.
+// Cycles: page 0 = PV | page 1 = Battery | page 2 = Environment
+// ============================================================
+void updateLCD(float pv_voltage_v,    float pv_current_a,
+               float battery_voltage_v, float battery_current_a,
+               float irradiance_wm2,  float ambient_temp_c,
+               float battery_temp_c) {
+  char row0[17], row1[17];   // 16 visible chars + null terminator
+
+  lcd.clear();
+
+  if (lcdPage == 0) {
+    float pv_power_w = pv_voltage_v * pv_current_a;
+    snprintf(row0, sizeof(row0), "PV %5.1fV %4.1fA", pv_voltage_v, pv_current_a);
+    snprintf(row1, sizeof(row1), "Pwr   %6.1f W  ",  pv_power_w);
+  } else if (lcdPage == 1) {
+    // Simple SoC estimate from terminal voltage (lead-acid: 11.8V=0%, 14.4V=100%)
+    int soc = constrain((int)((battery_voltage_v - 11.8f) / (14.4f - 11.8f) * 100.0f), 0, 100);
+    const char* mode = (battery_current_a >=  0.05f) ? "CHG" :
+                       (battery_current_a <= -0.05f) ? "DSC" : "FLT";
+    snprintf(row0, sizeof(row0), "BT %5.1fV %4.1fA", battery_voltage_v, battery_current_a);
+    snprintf(row1, sizeof(row1), "SoC %3d%%   [%s]", soc, mode);
+  } else {
+    snprintf(row0, sizeof(row0), "Irr %5.0f W/m2 ", irradiance_wm2);
+    snprintf(row1, sizeof(row1), "T:%4.1fC B:%4.1fC", ambient_temp_c, battery_temp_c);
+  }
+
+  lcd.setCursor(0, 0); lcd.print(row0);
+  lcd.setCursor(0, 1); lcd.print(row1);
+
+  lcdPage = (lcdPage + 1) % 3;   // advance page for next reading
 }
 
 // ============================================================
@@ -530,6 +578,11 @@ void loop() {
   float battery_temp_c = ds18b20.getTempCByIndex(0);
   if (battery_temp_c == DEVICE_DISCONNECTED_C) battery_temp_c = 25.0f;
 
+  // ── LCD UPDATE (always — independent of WiFi/MQTT state) ─────
+  updateLCD(pv_voltage_v, pv_current_a,
+            battery_voltage_v, battery_current_a,
+            irradiance_wm2, ambient_temp_c, battery_temp_c);
+
   // ── BUILD JSON PAYLOAD ───────────────────────────────────────
   StaticJsonDocument<768> doc;
   doc["pv_voltage_v"]        = round(pv_voltage_v      * 100) / 100.0;
@@ -552,36 +605,33 @@ void loop() {
   // ── TRANSMISSION ─────────────────────────────────────────────
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] Disconnected — storing reading locally.");
-    storeLocally(doc);   // storeLocally stamps is_offline_buffered=true + record_source
-    connectWiFi();
-    delay(60000);
-    return;
-  }
-
-  if (!mqttClient.connected()) {
-    Serial.println("[MQTT] Disconnected — reconnecting...");
-    connectMQTT();
-  }
-
-  if (mqttClient.connected()) {
-    sendBacklog();   // Drain any offline backlog first
-
-    // Serialize live payload AFTER any storeLocally path (doc is still unmodified here)
-    String payload;
-    serializeJson(doc, payload);
-    Serial.print("[MQTT] Publishing: ");
-    Serial.println(payload);
-    bool ok = mqttClient.publish(MQTT_TOPIC, payload, false, 1);  // QoS 1
-    if (!ok) {
-      Serial.println("[MQTT] Publish failed — storing locally.");
-      storeLocally(doc);
-    } else {
-      Serial.println("[MQTT] Published OK (QoS 1 PUBACK expected).");
-    }
+    storeLocally(doc);   // stamps is_offline_buffered=true + record_source
+    connectWiFi();       // attempt reconnect; LCD already updated above
   } else {
-    Serial.println("[MQTT] Broker unreachable — storing locally.");
-    storeLocally(doc);
+    if (!mqttClient.connected()) {
+      Serial.println("[MQTT] Disconnected — reconnecting...");
+      connectMQTT();
+    }
+
+    if (mqttClient.connected()) {
+      sendBacklog();   // Drain any offline backlog first
+
+      String payload;
+      serializeJson(doc, payload);
+      Serial.print("[MQTT] Publishing: ");
+      Serial.println(payload);
+      bool ok = mqttClient.publish(MQTT_TOPIC, payload, false, 1);  // QoS 1
+      if (!ok) {
+        Serial.println("[MQTT] Publish failed — storing locally.");
+        storeLocally(doc);
+      } else {
+        Serial.println("[MQTT] Published OK (QoS 1 PUBACK expected).");
+      }
+    } else {
+      Serial.println("[MQTT] Broker unreachable — storing locally.");
+      storeLocally(doc);
+    }
   }
 
-  delay(60000);   // 1 reading per minute
+  delay(60000);   // 1 reading per minute — LCD already updated before this block
 }

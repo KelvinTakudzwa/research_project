@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "author": "Solar Diagnostics System — SIL Validation (Wokwi)",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-esp32-devkit-v1",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-ds18b20",
+      "id": "temp1",
+      "top": 288,
+      "left": -192,
+      "attrs": { "temperature": "28.5", "label": "Battery Probe (DS18B20)" }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r_pullup",
+      "top": 176,
+      "left": -96,
+      "rotate": 90,
+      "attrs": { "value": "4700", "label": "4.7k\u03a9 Pullup" }
+    },
+    {
+      "type": "wokwi-bh1750",
+      "id": "bh1750",
+      "top": 0,
+      "left": 352,
+      "attrs": { "label": "Irradiance Sensor (BH1750)" }
+    },
+    {
+      "type": "wokwi-ds1307",
+      "id": "rtc",
+      "top": 208,
+      "left": 352,
+      "attrs": { "label": "RTC Clock (DS3231-compatible)" }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "pot_pv_v",
+      "top": 432,
+      "left": -192,
+      "attrs": { "value": "0.751", "label": "PV Voltage Divider (GPIO34) \u224819V" }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "pot_batt_v",
+      "top": 528,
+      "left": -192,
+      "attrs": { "value": "0.851", "label": "Batt Voltage Divider (GPIO35) \u224813.2V" }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "pot_pv_i",
+      "top": 432,
+      "left": 352,
+      "attrs": { "value": "0.561", "label": "PV Current / ACS712 (GPIO36) \u22482A" }
+    },
+    {
+      "type": "wokwi-potentiometer",
+      "id": "pot_batt_i",
+      "top": 528,
+      "left": 352,
+      "attrs": { "value": "0.500", "label": "Batt Current / ACS712 (GPIO39) \u22480A" }
+    },
+    {
+      "type": "wokwi-lcd1602",
+      "id": "lcd",
+      "top": 672,
+      "left": -96,
+      "attrs": { "pins": "i2c", "address": "0x27", "label": "Live Data Display (LCD1602 I2C)" }
+    }
+  ],
+  "connections": [
+    ["esp:D4",    "temp1:DQ",  "green",  []],
+    ["esp:3V3",   "temp1:VCC", "red",    []],
+    ["esp:GND.1", "temp1:GND", "black",  []],
+    ["esp:3V3",   "r_pullup:1","red",    []],
+    ["r_pullup:2","temp1:DQ",  "green",  []],
+
+    ["esp:D21",   "bh1750:SDA",  "blue",   []],
+    ["esp:D22",   "bh1750:SCL",  "yellow", []],
+    ["esp:3V3",   "bh1750:VCC",  "red",    []],
+    ["esp:GND.2", "bh1750:GND",  "black",  []],
+    ["esp:GND.2", "bh1750:ADDR", "black",  []],
+
+    ["esp:D21",   "rtc:SDA", "blue",   []],
+    ["esp:D22",   "rtc:SCL", "yellow", []],
+    ["esp:3V3",   "rtc:VCC", "red",    []],
+    ["esp:GND.3", "rtc:GND", "black",  []],
+
+    ["esp:34",    "pot_pv_v:SIG",  "orange", []],
+    ["esp:3V3",   "pot_pv_v:VCC",  "red",    []],
+    ["esp:GND.1", "pot_pv_v:GND",  "black",  []],
+
+    ["esp:35",    "pot_batt_v:SIG", "orange", []],
+    ["esp:3V3",   "pot_batt_v:VCC", "red",    []],
+    ["esp:GND.1", "pot_batt_v:GND", "black",  []],
+
+    ["esp:36",    "pot_pv_i:SIG",   "purple", []],
+    ["esp:3V3",   "pot_pv_i:VCC",   "red",    []],
+    ["esp:GND.2", "pot_pv_i:GND",   "black",  []],
+
+    ["esp:39",    "pot_batt_i:SIG", "purple", []],
+    ["esp:3V3",   "pot_batt_i:VCC", "red",    []],
+    ["esp:GND.2", "pot_batt_i:GND", "black",  []],
+
+    ["esp:D21",   "lcd:SDA", "blue",   []],
+    ["esp:D22",   "lcd:SCL", "yellow", []],
+    ["esp:5V",    "lcd:VCC", "red",    []],
+    ["esp:GND.3", "lcd:GND", "black",  []]
+  ]
+}
